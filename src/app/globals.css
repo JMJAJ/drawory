@@ -1366,3 +1366,16 @@ textarea.sticky-text { border: 0; outline: none; resize: none; background: trans
 .menu-template { display: flex; align-items: center; gap: 4px; }
 .menu-template .btn { flex: 1; min-width: 0; }
 .menu-template .btn .muted { margin-left: auto; font-size: 12px; }
+
+/* ---------- Chat emojis ---------- */
+.chat-emoji { width: 22px; height: 22px; object-fit: contain; vertical-align: -6px; margin: 0 1px; display: inline-block; }
+.chat-bubble.jumbo { background: transparent !important; padding: 2px 0; }
+.chat-bubble.jumbo .chat-emoji { width: 48px; height: 48px; vertical-align: middle; }
+.chat-mention-pop .chat-emoji { width: 24px; height: 24px; margin: 0; }
+.emoji-picker { width: 100%; min-width: 260px; padding: 8px; border-radius: 16px; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 16px 40px var(--shadow-strong); }
+.emoji-picker .input { height: 36px; }
+.emoji-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 2px; max-height: 240px; overflow: auto; }
+.emoji-cell { border: 0; background: transparent; border-radius: 8px; padding: 4px; aspect-ratio: 1; display: grid; place-items: center; }
+.emoji-cell:hover { background: var(--soft); }
+.emoji-cell img { width: 30px; height: 30px; object-fit: contain; }
+.chatbox .emoji-grid, .win-chat .emoji-grid { pointer-events: auto; }

@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
 import { initials, textOn, type Me } from "@/lib/client/identity";
+import { EMOJIS, findEmoji, searchEmojis } from "@/lib/emojis";
 import { mentions, REACTIONS } from "@/lib/reactions";
 import { STICKERS } from "@/lib/stickers";
 import type { ChatRow } from "@/lib/types";
@@ -14,22 +15,33 @@ function stickerIn(body: string) {
   return body.startsWith(STICKER_PREFIX) ? STICKERS.find((s) => s.url === body.slice(STICKER_PREFIX.length)) : undefined;
 }
 
-const MENTION = /(@[\p{L}\p{N}_.-]+)/gu;
+/** @names and :emoji: in a message. */
+const TOKENS = /(@[\p{L}\p{N}_.-]+|:[A-Za-z0-9_]{2,40}:)/gu;
 
 function Bubble({ body }: { body: string }) {
   const sticker = stickerIn(body);
   if (!sticker) {
-    // @names stand out.
-    const parts = body.split(MENTION);
+    const pieces = body.split(TOKENS).map((p, i) => {
+      if (i % 2 === 0) return { text: p };
+      if (p.startsWith("@")) return { mention: p };
+      const emoji = findEmoji(p.slice(1, -1));
+      return emoji ? { emoji, code: p } : { text: p };
+    });
+    // A message of just a few emojis shows them big, like Discord does.
+    const emojiCount = pieces.filter((x) => "emoji" in x).length;
+    const jumbo = emojiCount > 0 && emojiCount <= 6 && pieces.every((x) => "emoji" in x || ("text" in x && !(x.text ?? "").trim()));
     return (
-      <div className="chat-bubble">
-        {parts.map((p, i) =>
-          i % 2 === 1 ? (
+      <div className={`chat-bubble${jumbo ? " jumbo" : ""}`}>
+        {pieces.map((x, i) =>
+          "emoji" in x && x.emoji ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img key={i} className="chat-emoji" src={x.emoji.url} alt={x.code} title={x.code} loading="lazy" draggable={false} />
+          ) : "mention" in x ? (
             <span key={i} className="chat-mention">
-              {p}
+              {x.mention}
             </span>
           ) : (
-            <Fragment key={i}>{p}</Fragment>
+            <Fragment key={i}>{x.text}</Fragment>
           ),
         )}
       </div>
@@ -96,6 +108,8 @@ export function ChatThread({
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<Pending[]>([]);
   const [stickers, setStickers] = useState(false);
+  const [emojiPicker, setEmojiPicker] = useState(false);
+  const [emojiQuery, setEmojiQuery] = useState("");
   const [picker, setPicker] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const ordered = [...messages].reverse();
@@ -144,16 +158,23 @@ export function ChatThread({
   }, [newest, tracksSeen]);
 
   const typingMention = mentionDraft(draft);
-  const suggestions =
-    typingMention === null
-      ? []
-      : [{ name: "everyone", color: "var(--muted)" }, ...people]
-          .filter((p) => p.name.toLowerCase().replace(/\s+/g, "").startsWith(typingMention.toLowerCase()))
-          .slice(0, 5);
-  function pickMention(name: string) {
-    setDraft((d) => d.replace(/@([\p{L}\p{N}_.-]*)$/u, `@${name.split(/\s+/)[0]} `));
+  const typingEmoji = /(^|\s):([A-Za-z0-9_]{2,40})$/.exec(draft)?.[2] ?? null;
+  type Suggestion = { kind: "person"; name: string; color: string } | { kind: "emoji"; name: string; url: string };
+  const suggestions: Suggestion[] =
+    typingEmoji !== null
+      ? searchEmojis(typingEmoji, 8).map((e) => ({ kind: "emoji" as const, ...e }))
+      : typingMention === null
+        ? []
+        : [{ name: "everyone", color: "var(--muted)" }, ...people]
+            .filter((p) => p.name.toLowerCase().replace(/\s+/g, "").startsWith(typingMention.toLowerCase()))
+            .slice(0, 5)
+            .map((p) => ({ kind: "person" as const, ...p }));
+  function pick(s: Suggestion) {
+    if (s.kind === "emoji") setDraft((d) => d.replace(/:([A-Za-z0-9_]*)$/, `:${s.name}: `));
+    else setDraft((d) => d.replace(/@([\p{L}\p{N}_.-]*)$/u, `@${s.name.split(/\s+/)[0]} `));
     document.getElementById(inputId)?.focus();
   }
+  const pickerList = emojiPicker ? (emojiQuery.trim() ? searchEmojis(emojiQuery.trim(), 400) : EMOJIS) : [];
 
   function send(text = draft) {
     const body = text.trim();
@@ -283,15 +304,61 @@ export function ChatThread({
             </div>
           )}
           {suggestions.length > 0 && (
-            <div className="chat-mention-pop" role="listbox" aria-label="Mention someone" data-interactive>
-              {suggestions.map((p) => (
-                <button key={p.name} type="button" role="option" aria-selected={false} data-interactive onClick={() => pickMention(p.name)}>
-                  <span className="avatar chat-avatar" style={{ background: p.color, color: p.name === "everyone" ? "var(--surface)" : textOn(p.color) }}>
-                    {p.name === "everyone" ? "@" : initials(p.name)}
-                  </span>
-                  {p.name}
+            <div className="chat-mention-pop" role="listbox" aria-label={typingEmoji !== null ? "Emojis" : "Mention someone"} data-interactive>
+              {suggestions.map((s) => (
+                <button key={s.name} type="button" role="option" aria-selected={false} data-interactive onClick={() => pick(s)}>
+                  {s.kind === "emoji" ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img className="chat-emoji" src={s.url} alt="" loading="lazy" />
+                  ) : (
+                    <span className="avatar chat-avatar" style={{ background: s.color, color: s.name === "everyone" ? "var(--surface)" : textOn(s.color) }}>
+                      {s.name === "everyone" ? "@" : initials(s.name)}
+                    </span>
+                  )}
+                  {s.kind === "emoji" ? `:${s.name}:` : s.name}
                 </button>
               ))}
+            </div>
+          )}
+          {emojiPicker && (
+            <div className="chat-sticker-pop" data-interactive>
+              <div className="emoji-picker surface" role="dialog" aria-label="Emojis">
+                <input
+                  className="input"
+                  autoFocus
+                  aria-label="Find an emoji"
+                  placeholder="Find an emoji"
+                  value={emojiQuery}
+                  data-interactive
+                  onChange={(e) => setEmojiQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    e.stopPropagation();
+                    if (e.key === "Escape") setEmojiPicker(false);
+                  }}
+                />
+                <div className="emoji-grid sticker-scroll" data-interactive>
+                  {pickerList.map((em) => (
+                    <button
+                      key={em.name}
+                      type="button"
+                      className="emoji-cell"
+                      title={`:${em.name}:`}
+                      aria-label={em.name}
+                      data-interactive
+                      onClick={() => {
+                        setDraft((d) => `${d}${d && !d.endsWith(" ") ? " " : ""}:${em.name}: `);
+                        setEmojiPicker(false);
+                        setEmojiQuery("");
+                        document.getElementById(inputId)?.focus();
+                      }}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={em.url} alt="" loading="lazy" draggable={false} />
+                    </button>
+                  ))}
+                  {pickerList.length === 0 && <p className="muted">No emoji called that.</p>}
+                </div>
+              </div>
             </div>
           )}
           <button
@@ -302,9 +369,26 @@ export function ChatThread({
             title="Stickers"
             data-interactive
             data-sticker-toggle
-            onClick={() => setStickers((o) => !o)}
+            onClick={() => {
+              setStickers((o) => !o);
+              setEmojiPicker(false);
+            }}
           >
             <Icon name="sticker" size={20} />
+          </button>
+          <button
+            type="button"
+            className="icon-btn chat-sticker-btn"
+            aria-label="Add an emoji"
+            aria-expanded={emojiPicker}
+            title="Emojis (or type :name:)"
+            data-interactive
+            onClick={() => {
+              setEmojiPicker((o) => !o);
+              setStickers(false);
+            }}
+          >
+            <Icon name="smile" size={20} />
           </button>
           <label htmlFor={inputId} className="sr-only">
             Message
@@ -323,7 +407,7 @@ export function ChatThread({
               // Tab or Enter picks the first suggested name while typing @someone.
               if ((e.key === "Tab" || e.key === "Enter") && suggestions.length) {
                 e.preventDefault();
-                pickMention(suggestions[0].name);
+                pick(suggestions[0]);
                 return;
               }
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
