@@ -54,6 +54,22 @@ export interface ElementData {
   blocks?: WinBlock[];
 }
 
+/** One entry in a block: an option, a list item, a card, an expense or a song. */
+export interface WinItem {
+  id: string;
+  text: string;
+  done?: boolean;
+  src?: string;
+  /** Kanban column. */
+  col?: string;
+  /** Who added it, or who paid (bills). */
+  by?: string;
+  amount?: number;
+  /** Bills: who shares the cost (names). */
+  split?: string[];
+  url?: string;
+}
+
 export type WinBlockKind = "ranking" | "list" | "poll" | "chat" | "countdown" | "text" | "link" | "image" | "divider" | "slot";
 
 /** One block in a window. Width is in sixths of the window; the window grows to fit its blocks. */
@@ -64,8 +80,8 @@ export interface WinBlock {
   span?: 2 | 3 | 4 | 6;
   align?: "left" | "center" | "right";
   valign?: "top" | "middle" | "bottom";
-  /** Ranking options, poll options and list items. */
-  items?: { id: string; text: string; done?: boolean; src?: string }[];
+  /** Ranking options, poll options, list items, kanban cards, expenses, songs. */
+  items?: WinItem[];
   /** Who voted for what: option id -> user ids. */
   votes?: Record<string, string[]>;
   /** Countdown target (ISO time). */
@@ -152,7 +168,8 @@ export interface HistoryEvent {
 
 export type ElementOp =
   | { op: "upsert"; id: string; type: ElementType; data: ElementData; z: number }
-  | { op: "delete"; id: string };
+  | { op: "delete"; id: string }
+  | { op: "edit"; id: string; edit: import("./edits").Edit };
 
 export type LiveQueryName = "elements" | "presence" | "signals" | "chat";
 

@@ -193,6 +193,26 @@ await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [
 await new Promise((r) => setTimeout(r, 1500));
 check("Chat block moved back out keeps its messages", (chSub.getSnapshot().data ?? []).some((m) => m.thread === moveBox));
 await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [{ op: "delete", id: moveBox }, { op: "delete", id: moveWin }] }));
+// 10e. Ten people voting and adding at the same moment all count
+const voteWin = crypto.randomUUID();
+await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [{ op: "upsert", id: voteWin, type: "window", z: 10, data: { x: 0, y: 0, w: 640, blocks: [{ id: "rk", kind: "ranking", items: [{ id: "o1", text: "Bowling" }] }] } }] }));
+await Promise.all(
+  Array.from({ length: 10 }, (_, i) =>
+    call(`/api/boards/${BOARD}/elements`, json({ author: `u${i}`, ops: [
+      { op: "edit", id: voteWin, edit: { k: "vote", block: "rk", option: "o1", user: `u${i}` } },
+      { op: "edit", id: voteWin, edit: { k: "item-add", block: "rk", item: { id: `n${i}`, text: `Idea ${i}` } } },
+    ] })),
+  ),
+);
+const voted = await waitFor(() => {
+  const w = (elSub.getSnapshot().data ?? []).find((r) => r.id === voteWin);
+  const rk = w?.data.blocks?.[0];
+  return rk?.votes?.o1?.length === 10 && rk.items.length === 11;
+});
+check("Simultaneous votes and additions all count", voted);
+const bad = await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [{ op: "edit", id: voteWin, edit: { k: "vote", block: "x", option: "o1" } }] }));
+check("Rejects a malformed edit", bad.status === 400, `status ${bad.status}`);
+await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [{ op: "delete", id: voteWin }] }));
 check("Room chat messages are untouched", (chSub.getSnapshot().data ?? []).some((m) => m.body === "hello room"));
 
 // 11. Pages

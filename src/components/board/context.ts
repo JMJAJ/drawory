@@ -3,6 +3,7 @@
 import { createContext, useContext } from "react";
 import type { Me } from "@/lib/client/identity";
 import type { Listener } from "@/lib/client/proximity";
+import type { Edit } from "@/lib/edits";
 import type { ChatRow, ElementData } from "@/lib/types";
 
 /** play/pause: someone pressed it. tick: the person in charge says where playback is (every few seconds). */
@@ -19,6 +20,8 @@ export interface BoardCtx {
   serverNow(): number;
   /** Change an element. commit=false only updates this screen (used while typing or dragging). */
   patch(id: string, data: Partial<ElementData>, commit?: boolean): void;
+  /** A vote, tick or new item, merged on the server with what others did at the same time. */
+  edit(id: string, e: Edit): void;
   finishText(id: string, text: string): void;
   /** Messages in a chat box on the board (newest first). */
   chatFor(thread: string): readonly ChatRow[];

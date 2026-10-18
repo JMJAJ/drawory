@@ -1,3 +1,4 @@
+import { applyEdit, parseEdit, type Edit } from "@/lib/edits";
 import { pool } from "@/lib/server/db";
 import { boardIdFrom, cleanString, handler, HttpError, UUID } from "@/lib/server/http";
 import type { ElementType } from "@/lib/types";
@@ -27,6 +28,11 @@ export const POST = handler<Ctx>(async (req, { params }) => {
     const id = String(raw.id ?? "");
     if (!UUID.test(id)) throw new HttpError(400, "Bad element id");
     if (raw.op === "delete") return { id, op: "delete", type: null, data: null, z: null };
+    if (raw.op === "edit") {
+      const e = parseEdit(raw.edit);
+      if (!e) throw new HttpError(400, "Bad edit");
+      return { id, op: "edit", type: null, data: null, z: null, edit: e };
+    }
     if (raw.op !== "upsert") throw new HttpError(400, "Bad op");
     const type = raw.type as ElementType;
     if (!TYPES.includes(type)) throw new HttpError(400, "Bad element type");
@@ -36,7 +42,36 @@ export const POST = handler<Ctx>(async (req, { params }) => {
     return { id, op: "upsert", type, data: raw.data, z };
   });
 
-  const { rows } = await pool.query(
+  const plain = ops.filter((o: { op: string }) => o.op !== "edit");
+  const edits = ops.filter((o: { op: string }) => o.op === "edit") as { id: string; edit: Edit }[];
+  const db = await pool.connect();
+  try {
+    await db.query("begin");
+    if (plain.length) await applyBatch(db, boardId, plain, author);
+    for (const { id, edit } of edits) {
+      const { rows } = await db.query("select type, data, z from elements where board_id = $1 and id = $2 for update", [boardId, id]);
+      if (!rows[0]) continue; // deleted meanwhile: nothing to change
+      const data = applyEdit(rows[0].data, edit);
+      if (JSON.stringify(data).length > MAX_DATA) throw new HttpError(413, "Element too large");
+      await db.query("update elements set data = $3, updated_at = now() where board_id = $1 and id = $2", [boardId, id, data]);
+      await db.query(
+        "insert into element_events (board_id, element_id, op, type, data, z, author) values ($1, $2, 'upsert', $3, $4, $5, $6)",
+        [boardId, id, rows[0].type, data, rows[0].z, author],
+      );
+    }
+    const { rows } = await db.query("select pg_current_xact_id()::text as txid");
+    await db.query("commit");
+    return Response.json({ kind: "committed", txid: rows[0]?.txid ?? null });
+  } catch (e) {
+    await db.query("rollback").catch(() => {});
+    throw e;
+  } finally {
+    db.release();
+  }
+});
+
+async function applyBatch(db: import("pg").PoolClient, boardId: string, ops: unknown[], author: string | null) {
+  await db.query(
     `with input as (
        select * from jsonb_to_recordset($2::jsonb) as t(id uuid, op text, type text, data jsonb, z float8)
      ),
@@ -90,5 +125,4 @@ export const POST = handler<Ctx>(async (req, { params }) => {
      select txid from ev limit 1`,
     [boardId, JSON.stringify(ops), author],
   );
-  return Response.json({ kind: "committed", txid: rows[0]?.txid ?? null });
-});
+}

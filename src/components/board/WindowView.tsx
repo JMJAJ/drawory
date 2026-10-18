@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon, type IconName } from "@/components/icons";
 import { api } from "@/lib/client/api";
 import { measuredHeights } from "@/lib/client/elements";
+import type { Edit } from "@/lib/edits";
 import { stickerSrc } from "@/lib/stickers";
 import type { ElementData, ElementRow, ElementType, WinBlock, WinBlockKind } from "@/lib/types";
 import { ChatThread } from "./ChatThread";
@@ -229,6 +230,7 @@ function Thumb({ src, alt }: { src?: string; alt: string }) {
   return <img className="win-thumb" src={src} alt={alt} draggable={false} />;
 }
 
+type EditFn = (e: Edit) => void;
 type Update = (change: Partial<WinBlock> | ((b: WinBlock) => Partial<WinBlock>)) => void;
 
 /** A window: a card on the board built from blocks (ranking, list, chat…). It grows to fit them. */
@@ -587,7 +589,7 @@ export function WindowView({ row, editing }: { row: ElementRow; editing: boolean
                       )}
                       {!isClosed && (
                         <div className={`win-bb a-${b.align ?? "left"} v-${b.valign ?? "top"}`}>
-                          <BlockBody block={b} editing={editing} update={updater(b.id)} />
+                          <BlockBody block={b} editing={editing} update={updater(b.id)} edit={(e) => ctx.edit(row.id, e)} />
                         </div>
                       )}
                     </>
@@ -646,14 +648,14 @@ export function WindowView({ row, editing }: { row: ElementRow; editing: boolean
   );
 }
 
-function BlockBody({ block, editing, update }: { block: WinBlock; editing: boolean; update: Update }) {
+function BlockBody({ block, editing, update, edit }: { block: WinBlock; editing: boolean; update: Update; edit: EditFn }) {
   switch (block.kind) {
     case "ranking":
-      return <RankingBlock block={block} editing={editing} update={update} />;
+      return <RankingBlock block={block} editing={editing} update={update} edit={edit} />;
     case "poll":
-      return <PollBlock block={block} editing={editing} update={update} />;
+      return <PollBlock block={block} editing={editing} update={update} edit={edit} />;
     case "list":
-      return <ListBlock block={block} editing={editing} update={update} />;
+      return <ListBlock block={block} editing={editing} update={update} edit={edit} />;
     case "chat":
       return <ChatBlock block={block} />;
     case "countdown":
@@ -696,15 +698,8 @@ function AddItem({ placeholder, onAdd }: { placeholder: string; onAdd: (text: st
   );
 }
 
-function toggleVote(votes: Record<string, string[]> | undefined, optionId: string, me: string, single: boolean) {
-  const v: Record<string, string[]> = {};
-  const had = (votes?.[optionId] ?? []).includes(me);
-  for (const [k, list] of Object.entries(votes ?? {})) v[k] = single || k === optionId ? list.filter((u) => u !== me) : list;
-  if (!had) v[optionId] = [...(v[optionId] ?? []), me];
-  return v;
-}
 
-function RankingBlock({ block, editing, update }: { block: WinBlock; editing: boolean; update: Update }) {
+function RankingBlock({ block, editing, update, edit }: { block: WinBlock; editing: boolean; update: Update; edit: EditFn }) {
   const { me, readOnly } = useBoard();
   const items = (block.items ?? []).map((it) => {
     const voters = block.votes?.[it.id] ?? [];
@@ -747,7 +742,7 @@ function RankingBlock({ block, editing, update }: { block: WinBlock; editing: bo
                 aria-pressed={mine}
                 disabled={readOnly}
                 aria-label={`${mine ? "Remove your vote for" : "Vote for"} ${it.text} (${n})`}
-                onClick={() => update((b) => ({ votes: toggleVote(b.votes, it.id, me.id, false) }))}
+                onClick={() => edit({ k: "vote", block: block.id, option: it.id, user: me.id })}
               >
                 <Icon name="vote" size={14} />
                 {n}
@@ -756,12 +751,12 @@ function RankingBlock({ block, editing, update }: { block: WinBlock; editing: bo
           </li>
         ))}
       </ol>
-      {!readOnly && <AddItem placeholder="Add an option" onAdd={(text) => update((b) => ({ items: [...(b.items ?? []), item(text)] }))} />}
+      {!readOnly && <AddItem placeholder="Add an option" onAdd={(text) => edit({ k: "item-add", block: block.id, item: { ...item(text), by: me.name } })} />}
     </>
   );
 }
 
-function PollBlock({ block, editing, update }: { block: WinBlock; editing: boolean; update: Update }) {
+function PollBlock({ block, editing, update, edit }: { block: WinBlock; editing: boolean; update: Update; edit: EditFn }) {
   const { me, readOnly } = useBoard();
   const options = block.items ?? [];
   const total = options.reduce((s, o) => s + (block.votes?.[o.id]?.length ?? 0), 0);
@@ -780,7 +775,7 @@ function PollBlock({ block, editing, update }: { block: WinBlock; editing: boole
                 data-interactive
                 aria-pressed={mine}
                 disabled={readOnly || editing}
-                onClick={() => update((b) => ({ votes: toggleVote(b.votes, o.id, me.id, true) }))}
+                onClick={() => edit({ k: "vote", block: block.id, option: o.id, user: me.id, single: true })}
               >
                 <span className="win-poll-fill" style={{ width: `${pct}%` }} />
                 <span className="win-poll-text">{o.text}</span>
@@ -806,7 +801,7 @@ function PollBlock({ block, editing, update }: { block: WinBlock; editing: boole
   );
 }
 
-function ListBlock({ block, editing, update }: { block: WinBlock; editing: boolean; update: Update }) {
+function ListBlock({ block, editing, update, edit }: { block: WinBlock; editing: boolean; update: Update; edit: EditFn }) {
   const { readOnly } = useBoard();
   const items = block.items ?? [];
   return (
@@ -822,7 +817,7 @@ function ListBlock({ block, editing, update }: { block: WinBlock; editing: boole
               disabled={readOnly}
               aria-pressed={!!it.done}
               aria-label={`${it.done ? "Uncheck" : "Check"} ${it.text}`}
-              onClick={() => update((b) => ({ items: (b.items ?? []).map((x) => (x.id === it.id ? { ...x, done: !x.done } : x)) }))}
+              onClick={() => edit({ k: "item-toggle", block: block.id, item: it.id })}
             >
               {it.done && <Icon name="check" size={13} strokeWidth={3.5} />}
             </button>
@@ -844,7 +839,7 @@ function ListBlock({ block, editing, update }: { block: WinBlock; editing: boole
           </li>
         ))}
       </ul>
-      {!readOnly && <AddItem placeholder="Add an item" onAdd={(text) => update((b) => ({ items: [...(b.items ?? []), { ...item(text), done: false }] }))} />}
+      {!readOnly && <AddItem placeholder="Add an item" onAdd={(text) => edit({ k: "item-add", block: block.id, item: { ...item(text), done: false } })} />}
     </>
   );
 }

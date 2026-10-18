@@ -239,7 +239,7 @@ function NoteView({ row, editing }: { row: ElementRow; editing: boolean }) {
             data-interactive
             aria-label={`${item.done ? "Uncheck" : "Check"} ${label}`}
             aria-pressed={item.done}
-            onClick={() => setItems(items.map((i) => (i.id === item.id ? { ...i, done: !i.done } : i)))}
+            onClick={() => ctx.edit(row.id, { k: "item-toggle", item: item.id })}
           >
             {item.done && <Icon name="check" size={13} strokeWidth={3.5} />}
           </button>
@@ -286,7 +286,7 @@ function NoteView({ row, editing }: { row: ElementRow; editing: boolean }) {
             e.preventDefault();
             const text = draft.trim();
             if (!text) return;
-            setItems([...items, { id: crypto.randomUUID(), text, done: false }]);
+            ctx.edit(row.id, { k: "item-add", item: { id: crypto.randomUUID(), text, done: false } });
             setDraft("");
           }}
         >

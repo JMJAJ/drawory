@@ -25,7 +25,8 @@ import {
 import { displayCode, inviteLink, rememberRoom } from "@/lib/client/rooms";
 import { initials, textOn, type Me } from "@/lib/client/identity";
 import { audioPeaks, detectLink, fitWithin, imageSize, shrinkPhoto, videoSize, type DetectedLink } from "@/lib/client/media";
-import type { Activity, BoardMeta, BoardPage, ChatRow, ElementData, ElementRow, ElementType, PresenceRow, WinBlock } from "@/lib/types";
+import type { Activity, BoardMeta, BoardPage, ChatRow, ElementData, ElementOp, ElementRow, ElementType, PresenceRow, WinBlock } from "@/lib/types";
+import { applyEdit, type Edit } from "@/lib/edits";
 import { PagesBar } from "./PagesBar";
 import { NowPlaying, type PlayingItem } from "./NowPlaying";
 import { BoardContext, type BoardCtx, type YtCommand } from "./context";
@@ -53,7 +54,8 @@ type Tool =
   | "hand" | "select" | "pen" | "eraser" | "rect" | "ellipse" | "arrow" | "text"
   | "note" | "sticky" | "sticker" | "chatbox" | "window" | "media" | "youtube" | "voice" | "capsule";
 
-type Change = { before: ElementRow | null; after: ElementRow | null };
+/** edit: a small change the server applies to its newest copy (votes, ticks), not a whole-card save. */
+type Change = { before: ElementRow | null; after: ElementRow | null; edit?: Edit };
 
 type Gesture =
   // hold: on touch, keeping a finger still on empty canvas turns the pan into a selection box.
@@ -505,10 +507,12 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         return next;
       });
       try {
-        const ops = changes.map((c, i) =>
-          c.after
-            ? { op: "upsert" as const, id: c.after.id, type: c.after.type, data: c.after.data, z: c.after.z }
-            : { op: "delete" as const, id: ids[i] },
+        const ops: ElementOp[] = changes.map((c, i) =>
+          c.edit
+            ? { op: "edit" as const, id: ids[i], edit: c.edit }
+            : c.after
+              ? { op: "upsert" as const, id: c.after.id, type: c.after.type, data: c.after.data, z: c.after.z }
+              : { op: "delete" as const, id: ids[i] },
         );
         for (let i = 0; i < ops.length; i += 200) {
           const res = await withRetry(() => api.applyOps(boardId, ops.slice(i, i + 200), me.id));
@@ -579,6 +583,16 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       else preview([{ id, row: after }]);
     },
     [send, preview],
+  );
+  /** A vote, tick or new item: shows now, and the server merges it with what others did meanwhile. */
+  const applyEditTo = useCallback(
+    (id: string, e: Edit) => {
+      const row = rowsRef.current.get(id);
+      if (!row) return;
+      const after = { ...row, data: applyEdit(row.data, e), updated_at: new Date() };
+      void send([{ before: committedRef.current.get(id) ?? null, after, edit: e }], false);
+    },
+    [send],
   );
   const deleteIds = useCallback(
     (ids: string[]) => {
@@ -1726,6 +1740,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       watchers,
       serverNow,
       patch,
+      edit: applyEditTo,
       finishText,
       reportTyping,
       chatFor: (thread) => threads.get(thread) ?? NO_CHAT,
@@ -1743,7 +1758,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       openCapsule: (id) => setDialog({ kind: "capsuleOpen", id, title: rowsRef.current.get(id)?.data.title || "Time capsule" }),
       addToCapsule: (id) => setDialog({ kind: "capsuleNote", id }),
     }),
-    [boardId, me, laneOpen, camera.zoom, watchers, serverNow, patch, finishText, reportTyping, threads, sendTo, sendYt, onYt, onListener, setEditingId, setSelectedId],
+    [boardId, me, laneOpen, camera.zoom, watchers, serverNow, patch, applyEditTo, finishText, reportTyping, threads, sendTo, sendYt, onYt, onListener, setEditingId, setSelectedId],
   );
 
   /* ---------- Others' live activity ---------- */
@@ -2165,12 +2180,9 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
             aria-label={iLike ? "Unlike" : selectedRows.length > 1 ? `Like all ${selectedRows.length}` : "Like"}
             aria-pressed={iLike}
             style={iLike ? { color: "var(--accent)", background: "var(--accent-soft)" } : undefined}
-            onClick={() =>
-              changeAll((r) => {
-                const likes = (r.data.likes ?? []).filter((l) => l !== me.id);
-                return { ...r, data: { ...r.data, likes: iLike ? likes : [...likes, me.id] } };
-              })
-            }
+            onClick={() => {
+              for (const r of selectedRows) if ((r.data.likes ?? []).includes(me.id) === iLike) applyEditTo(r.id, { k: "like", user: me.id });
+            }}
           >
             <Icon name="heart" size={18} filled={iLike} />
           </button>
