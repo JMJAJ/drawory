@@ -4,7 +4,7 @@ import { createRealtimeClient, type RealtimeClient, type SealedLiveQuery } from 
 import { RealtimeProvider, useLiveQuery } from "@neon/realtime-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/client/api";
-import type { ElementRow, LiveQueryName, PresenceRow, SignalRow } from "@/lib/types";
+import type { ChatRow, ElementRow, LiveQueryName, PresenceRow, SignalRow } from "@/lib/types";
 
 // Keeps the board, cursors and signals flowing whatever the connection does:
 //  - Neon Realtime live queries when they're reachable (instant).
@@ -18,7 +18,7 @@ const REALTIME_URL = process.env.NEXT_PUBLIC_NEON_REALTIME_URL ?? "";
 /** How long a query may be down before polling takes over. */
 const DEGRADE_AFTER_MS = 5_000;
 const RETRY_LIVE_MS = 30_000;
-const POLL_MS: Record<LiveQueryName, number> = { elements: 1_500, presence: 700, signals: 1_200 };
+const POLL_MS: Record<LiveQueryName, number> = { elements: 1_500, presence: 700, signals: 1_200, chat: 1_500 };
 const HIDDEN_POLL_MS = 8_000;
 
 export type SyncStatus = "live" | "polling" | "connecting" | "offline";
@@ -27,6 +27,7 @@ interface Rows {
   elements: ElementRow;
   presence: PresenceRow;
   signals: SignalRow;
+  chat: ChatRow;
 }
 type Data<N extends LiveQueryName> = readonly Rows[N][];
 type LiveState<N extends LiveQueryName> = {
@@ -42,6 +43,7 @@ const CONVERT: { [N in LiveQueryName]: (raw: Rows[N]) => Rows[N] } = {
   elements: (r) => ({ ...r, created_at: date(r.created_at), updated_at: date(r.updated_at) }),
   presence: (r) => ({ ...r, updated_at: date(r.updated_at) }),
   signals: (r) => ({ ...r, created_at: date(r.created_at) }),
+  chat: (r) => ({ ...r, created_at: date(r.created_at) }),
 };
 
 /** One live query. A component rather than a hook so it can be left out when Realtime is unavailable. */
@@ -120,13 +122,14 @@ export function useBoardSync(boardId: string) {
     if (!REALTIME_URL || Date.now() - lastConnect.current < 5_000) return;
     lastConnect.current = Date.now();
     try {
-      const [elements, presence, signals] = await Promise.all([
+      const [elements, presence, signals, chat] = await Promise.all([
         api.seal<ElementRow>(boardId, "elements"),
         api.seal<PresenceRow>(boardId, "presence"),
         api.seal<SignalRow>(boardId, "signals"),
+        api.seal<ChatRow>(boardId, "chat"),
       ]);
       // A fresh client skips any long reconnect backoff the old one had built up.
-      setConn({ client: createRealtimeClient({ url: REALTIME_URL, logLevel: "warn" }), sealed: { elements, presence, signals } });
+      setConn({ client: createRealtimeClient({ url: REALTIME_URL, logLevel: "warn" }), sealed: { elements, presence, signals, chat } });
     } catch {
       // Realtime isn't set up on the server, or we're offline: polling covers it.
     }
@@ -164,7 +167,7 @@ export function useBoardSync(boardId: string) {
   }, []);
 
   const isLive = (n: LiveQueryName) => !!conn && live[n]?.status === "live";
-  const allLive = isLive("elements") && isLive("presence") && isLive("signals");
+  const allLive = isLive("elements") && isLive("presence") && isLive("signals") && isLive("chat");
 
   // Fall back to polling once live has been down a little while; drop back as soon as it's up.
   useEffect(() => {
@@ -193,6 +196,7 @@ export function useBoardSync(boardId: string) {
   const elPoll = usePoller(boardId, "elements", degraded && !isLive("elements"));
   const prPoll = usePoller(boardId, "presence", degraded && !isLive("presence"));
   const sgPoll = usePoller(boardId, "signals", degraded && !isLive("signals"));
+  const chPoll = usePoller(boardId, "chat", degraded && !isLive("chat"));
 
   const pick = <N extends LiveQueryName>(n: N, poll: { rows: Data<N> | undefined }): Data<N> | undefined => {
     const liveData = (live[n] as LiveState<N> | undefined)?.data;
@@ -202,6 +206,7 @@ export function useBoardSync(boardId: string) {
   const elements = pick("elements", elPoll);
   const presence = pick("presence", prPoll);
   const signals = pick("signals", sgPoll);
+  const chat = pick("chat", chPoll);
 
   /** Resolves once a saved change is visible in `elements`. Stable, so callers don't re-render. */
   const latest = useRef({ live: live.elements, isLive: false, pollNow: elPoll.pollNow });
@@ -214,7 +219,7 @@ export function useBoardSync(boardId: string) {
     else await pollNow();
   }, []);
 
-  const pollersOk = elPoll.ok && prPoll.ok && sgPoll.ok;
+  const pollersOk = elPoll.ok && prPoll.ok && sgPoll.ok && chPoll.ok;
   const status: SyncStatus = allLive ? "live" : !degraded ? "connecting" : pollersOk ? "polling" : "offline";
 
   const nodes =
@@ -223,8 +228,9 @@ export function useBoardSync(boardId: string) {
         <LiveQuery boardId={boardId} name="elements" sealed={conn.sealed.elements} initialData={elements} onState={onState} />
         <LiveQuery boardId={boardId} name="presence" sealed={conn.sealed.presence} initialData={presence} onState={onState} />
         <LiveQuery boardId={boardId} name="signals" sealed={conn.sealed.signals} initialData={signals} onState={onState} />
+        <LiveQuery boardId={boardId} name="chat" sealed={conn.sealed.chat} initialData={chat} onState={onState} />
       </RealtimeProvider>
     ) : null;
 
-  return { elements, presence, signals, status, awaitTxId, reconnect, nodes };
+  return { elements, presence, signals, chat, status, awaitTxId, reconnect, nodes };
 }

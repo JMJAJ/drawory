@@ -37,7 +37,7 @@ export const RESIZABLE: Partial<Record<ElementType, "free" | "aspect" | "width" 
   image: "aspect",
   sticker: "aspect",
   video: "aspect",
-  youtube: "aspect",
+  youtube: "width",
   embed: "free",
   note: "width",
   link: "width",
@@ -57,9 +57,12 @@ export function bounds(el: Pick<ElementRow, "type" | "data">) {
     audio: [d.w ?? 320, 64],
     capsule: [d.w ?? 300, 190],
     link: [d.w ?? 280, d.image ? 240 : 130],
+    // 16:9 video plus 10 px padding each side and the title row.
+    youtube: [d.w ?? 480, ((d.w ?? 480) - 20) * (9 / 16) + 82],
   };
   const [fw, fh] = fallback[el.type] ?? [d.w ?? 100, d.h ?? 100];
-  return { x: d.x, y: d.y, w: d.w && el.type !== "text" ? d.w : fw, h: d.h ?? fh };
+  const h = el.type === "youtube" ? fh : d.h ?? fh;
+  return { x: d.x, y: d.y, w: d.w && el.type !== "text" ? d.w : fw, h };
 }
 
 export function contains(outer: ReturnType<typeof bounds>, inner: ReturnType<typeof bounds>) {

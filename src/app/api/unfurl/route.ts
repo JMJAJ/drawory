@@ -52,6 +52,29 @@ export const GET = handler<unknown>(async (req) => {
     throw new HttpError(400, "Not a link");
   }
 
+  // YouTube and Vimeo pages often show a consent screen to servers; their oEmbed APIs give the real title.
+  const host = url.hostname.replace(/^(www|m|music)\./, "");
+  const oembed =
+    host === "youtube.com" || host === "youtu.be"
+      ? `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(url.toString())}`
+      : host === "vimeo.com"
+        ? `https://vimeo.com/api/oembed.json?url=${encodeURIComponent(url.toString())}`
+        : null;
+  if (oembed) {
+    const meta = await fetch(oembed, { signal: AbortSignal.timeout(5000) })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+    if (meta?.title) {
+      return Response.json({
+        url: url.toString(),
+        title: String(meta.title).slice(0, 200),
+        description: meta.author_name ? `by ${String(meta.author_name).slice(0, 100)}` : "",
+        image: typeof meta.thumbnail_url === "string" && meta.thumbnail_url.startsWith("https://") ? meta.thumbnail_url : "",
+        site: host,
+      });
+    }
+  }
+
   let res: Response | undefined;
   for (let hop = 0; hop < 4; hop++) {
     await assertPublic(url);

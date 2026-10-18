@@ -44,6 +44,7 @@ function toRow(p: Partial<PresenceRow> & { user_id: string }, at: number): Prese
     zoom: Number(p.zoom) || 1,
     tool: typeof p.tool === "string" ? p.tool : null,
     watching: typeof p.watching === "string" ? p.watching : null,
+    page: typeof p.page === "string" ? p.page : null,
     activity: p.activity && typeof p.activity === "object" ? p.activity : null,
     updated_at: new Date(at),
   };

@@ -107,3 +107,20 @@ alter table boards add column if not exists created_by text;
 -- What each person is doing right now (selection box, stroke in progress, dragging, typing),
 -- so everyone else can watch it happen live. Cleared when they finish.
 alter table presence add column if not exists activity jsonb;
+
+-- Pages inside a room. Elements say which page they're on (data.page; none = "main").
+alter table boards add column if not exists pages jsonb not null default '[{"id": "main", "name": "Page 1"}]'::jsonb;
+-- Which page each person is looking at, so cursors only show on the same page.
+alter table presence add column if not exists page text;
+
+-- Room chat.
+create table if not exists messages (
+  id         bigserial primary key,
+  board_id   text not null references boards(id) on delete cascade,
+  user_id    text not null,
+  name       text not null,
+  color      text not null,
+  body       text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists messages_board_idx on messages (board_id, id desc);

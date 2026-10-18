@@ -25,6 +25,7 @@ export interface ElementData {
   color?: string;
   size?: number; // stroke width, or font size for text
   font?: string; // text font id, see FONTS
+  page?: string; // which page of the room it's on; none = "main"
   dashed?: boolean;
   points?: number[][]; // stroke: [x, y, pressure] relative to x/y; arrow: [[0,0],[dx,dy]]
   text?: string;
@@ -73,6 +74,7 @@ export interface PresenceRow {
   zoom: number;
   tool: string | null;
   watching: string | null;
+  page: string | null;
   activity: Activity | null;
   updated_at: Date;
 }
@@ -100,10 +102,15 @@ export interface SignalRow {
   created_at: Date;
 }
 
+export interface BoardPage {
+  id: string;
+  name: string;
+}
+
 export interface BoardMeta {
   id: string;
   name: string;
-  together_since: string | null;
+  pages: BoardPage[];
 }
 
 export interface HistoryEvent {
@@ -121,4 +128,14 @@ export type ElementOp =
   | { op: "upsert"; id: string; type: ElementType; data: ElementData; z: number }
   | { op: "delete"; id: string };
 
-export type LiveQueryName = "elements" | "presence" | "signals";
+export type LiveQueryName = "elements" | "presence" | "signals" | "chat";
+
+/** A row of the `chat` live query. int8 ids arrive as strings. */
+export interface ChatRow {
+  id: string;
+  user_id: string;
+  name: string;
+  color: string;
+  body: string;
+  created_at: Date;
+}

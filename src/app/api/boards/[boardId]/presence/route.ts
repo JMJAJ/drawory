@@ -19,12 +19,12 @@ export const POST = handler<Ctx>(async (req, { params }) => {
   if (activityJson && activityJson.length > 12_000) throw new HttpError(413, "Activity too large");
 
   await pool.query(
-    `insert into presence (board_id, user_id, name, color, cursor_x, cursor_y, view_x, view_y, view_w, view_h, zoom, tool, watching, activity, updated_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now())
+    `insert into presence (board_id, user_id, name, color, cursor_x, cursor_y, view_x, view_y, view_w, view_h, zoom, tool, watching, activity, page, updated_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())
      on conflict (board_id, user_id) do update set
        name = excluded.name, color = excluded.color, cursor_x = excluded.cursor_x, cursor_y = excluded.cursor_y,
        view_x = excluded.view_x, view_y = excluded.view_y, view_w = excluded.view_w, view_h = excluded.view_h,
-       zoom = excluded.zoom, tool = excluded.tool, watching = excluded.watching, activity = excluded.activity, updated_at = now()`,
+       zoom = excluded.zoom, tool = excluded.tool, watching = excluded.watching, activity = excluded.activity, page = excluded.page, updated_at = now()`,
     [
       boardId,
       userId,
@@ -40,6 +40,7 @@ export const POST = handler<Ctx>(async (req, { params }) => {
       cleanString(b.tool, 20) || null,
       watching,
       activityJson,
+      cleanString(b.page, 24) || null,
     ],
   );
   return Response.json({ now: Date.now() });

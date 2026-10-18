@@ -4,7 +4,8 @@ import { createContext, useContext } from "react";
 import type { Me } from "@/lib/client/identity";
 import type { ElementData } from "@/lib/types";
 
-export type YtCommand = { action: "play" | "pause"; time: number; sentAt: number };
+/** play/pause: someone pressed it. tick: the person in charge says where playback is (every few seconds). */
+export type YtCommand = { action: "play" | "pause" | "tick"; time: number; sentAt: number };
 
 export interface BoardCtx {
   boardId: string;

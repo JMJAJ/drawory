@@ -27,6 +27,8 @@ Anyone with a room's code can join it. To lock the whole site behind one passcod
 | `NEON_REALTIME_SECRET`, `NEXT_PUBLIC_NEON_REALTIME_URL` | `neon deploy` / `neon env pull`. Optional: without them the board syncs by polling. |
 | `APP_PASSCODE` | Optional site-wide passcode on top of room codes. Unset: anyone with a room code can join. |
 | `AUTH_SECRET` | Random string that signs the login cookie. |
+| `CLOUDINARY_URL` | Optional. Photos, videos and voice notes upload straight to this Cloudinary cloud (served optimized from its CDN, no host upload limit). Unset: they're stored in Postgres. |
+| `NEXT_PUBLIC_RELAY_URL` | Optional. The Cloudinary-free live relay on Cloudflare (`wss://…workers.dev`). Unset: the app's own server's `/ws`. |
 | `APP_ORIGINS` | Only read by `neon deploy`: your site's address(es), comma separated. See Deploying. |
 
 ## How sync works

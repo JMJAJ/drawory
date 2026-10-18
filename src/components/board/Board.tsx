@@ -23,7 +23,9 @@ import {
 import { displayCode, inviteLink, rememberRoom } from "@/lib/client/rooms";
 import { initials, textOn, type Me } from "@/lib/client/identity";
 import { audioPeaks, detectLink, fitWithin, imageSize, shrinkPhoto, videoSize, type DetectedLink } from "@/lib/client/media";
-import type { Activity, BoardMeta, ElementData, ElementRow, ElementType, PresenceRow } from "@/lib/types";
+import type { Activity, BoardMeta, BoardPage, ElementData, ElementRow, ElementType, PresenceRow } from "@/lib/types";
+import { PagesBar } from "./PagesBar";
+import { ChatPanel } from "./ChatPanel";
 import { BoardContext, type BoardCtx, type YtCommand } from "./context";
 import {
   AddMediaDialog,
@@ -39,6 +41,7 @@ import { RemoteCursor } from "./RemoteCursor";
 import { MemoryLane } from "./MemoryLane";
 import { StickerTray } from "./StickerTray";
 import { ZoomControl } from "./ZoomControl";
+import { TextSizeControl } from "./TextSizeControl";
 import { useBoardSync, type SyncStatus } from "./sync";
 import { useRoomSocket } from "./socket";
 import type { Sticker } from "@/lib/stickers";
@@ -96,6 +99,9 @@ const STATUS: Record<SyncStatus, { label: string; title: string }> = {
   offline: { label: "Offline", title: "Can't reach the board right now. Tap to retry." },
 };
 
+const DEFAULT_PAGES: BoardPage[] = [{ id: "main", name: "Page 1" }];
+const pageOf = (r: { data: ElementData }) => r.data.page ?? "main";
+
 function isEditable(t: EventTarget | null) {
   const el = t as HTMLElement | null;
   return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
@@ -152,6 +158,24 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   const [overlay, setOverlay] = useState(() => new Map<string, { row: ElementRow | null; v: number }>());
   const versionCounter = useRef(0);
 
+  // The room's pages, and which one I'm on (remembered per room on this device).
+  const [board, setBoard] = useState<BoardMeta | null>(null);
+  const pages = board?.pages?.length ? board.pages : DEFAULT_PAGES;
+  const pageKey = `drawory:page:${boardId}`;
+  const [pageChoice, setPageChoice] = useState<string>(() => {
+    try {
+      return localStorage.getItem(pageKey) || "main";
+    } catch {
+      return "main";
+    }
+  });
+  // If someone deleted the page I was on, land on the first one.
+  const page = pages.some((p) => p.id === pageChoice) ? pageChoice : pages[0].id;
+  const pageRef = useRef(page);
+  useEffect(() => {
+    pageRef.current = page;
+  }, [page]);
+
   const committed = useMemo(() => new Map((elData ?? []).map((r) => [r.id, r])), [elData]);
   const rows = useMemo(() => {
     const map = new Map(committed);
@@ -159,8 +183,8 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       if (o.row) map.set(id, o.row);
       else map.delete(id);
     }
-    return [...map.values()].sort((a, b) => a.z - b.z);
-  }, [committed, overlay]);
+    return [...map.values()].filter((r) => pageOf(r) === page).sort((a, b) => a.z - b.z);
+  }, [committed, overlay, page]);
   const rowsById = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
   const rowsRef = useRef(rowsById);
   const committedRef = useRef(committed);
@@ -183,6 +207,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   const [colorId, setColorId] = useState("ink");
   const [sizeId, setSizeId] = useState(2);
   const [fontId, setFontId] = useState<string>("clean");
+  const [textSize, setTextSize] = useState(28);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   // Single-item helpers; the toolbar, editing and resizing work on one item.
@@ -214,13 +239,12 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   >(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [stickersOpen, setStickersOpen] = useState(false);
-  const [toast, setToast] = useState<{ id: number; text: string; heart?: boolean } | null>(null);
+  const [toast, setToast] = useState<{ id: number; text: string; heart?: boolean; action?: { label: string; run: () => void } } | null>(null);
   const [hearts, setHearts] = useState<{ id: number; x: number; y: number; dx: number; delay: number }[]>([]);
   const [followId, setFollowId] = useState<string | null>(null);
   const setFollowing = (on: boolean) => !on && setFollowId(null);
   const [laneOpen, setLaneOpen] = useState(false);
   const [laneRows, setLaneRows] = useState<ElementRow[] | null>(null);
-  const [board, setBoard] = useState<BoardMeta | null>(null);
   const [dropping, setDropping] = useState(false);
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -245,10 +269,13 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     if (pointerType !== "mouse") keyboardProxy.current?.focus({ preventScroll: true });
   };
 
-  const showToast = useCallback((text: string, heart = false) => setToast({ id: Date.now(), text, heart }), []);
+  const showToast = useCallback(
+    (text: string, heart = false, action?: { label: string; run: () => void }) => setToast({ id: Date.now(), text, heart, action }),
+    [],
+  );
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(null), 3200);
+    const t = setTimeout(() => setToast(null), toast.action ? 7000 : 3200);
     return () => clearTimeout(t);
   }, [toast]);
 
@@ -281,7 +308,8 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   useEffect(loadBoard, [loadBoard]);
 
   /* ---------- Camera ---------- */
-  const camKey = `drawory:cam:${boardId}`;
+  // One saved view per page ("main" keeps the key it always had).
+  const camKey = page === "main" ? `drawory:cam:${boardId}` : `drawory:cam:${boardId}:${page}`;
   useEffect(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(camKey) ?? "null");
@@ -292,13 +320,14 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         return;
       }
     } catch {}
-    setCamera({ x: window.innerWidth / 2, y: window.innerHeight / 2, zoom: 1 });
+    // A page not opened on this device before: show everything on it.
+    const all = unionBounds([...rowsRef.current.values()]);
+    setCamera(all ? cameraFor(all, window.innerWidth, window.innerHeight) : { x: window.innerWidth / 2, y: window.innerHeight / 2, zoom: 1 });
   }, [camKey, setCamera]);
   // First visit on this device: frame everything once the board loads.
   useEffect(() => {
     if (cameraReady || !elData) return;
-    const all = unionBounds(elData);
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- frame the board once its first rows arrive
+    const all = unionBounds(elData.filter((r) => pageOf(r) === pageRef.current));
     if (all) setCamera(cameraFor(all, window.innerWidth, window.innerHeight));
     setCameraReady(true);
   }, [cameraReady, elData, setCamera]);
@@ -392,6 +421,11 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     [smoothZoomTo, zoomGoal],
   );
   const centerWorld = useCallback(() => toWorld(window.innerWidth / 2, window.innerHeight / 2), [toWorld]);
+  /** Every new element belongs to the page I'm on. */
+  const mkRow = useCallback(
+    (type: ElementType, data: ElementData, z: number, by: string) => makeRow(type, { ...data, page: pageRef.current }, z, by),
+    [],
+  );
   const nextZ = useCallback(() => {
     let max = 0;
     for (const r of rowsRef.current.values()) max = Math.max(max, r.z);
@@ -459,12 +493,12 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   );
   const addRow = useCallback(
     (type: ElementType, data: ElementData, select = true) => {
-      const row = makeRow(type, data, nextZ(), me.id);
+      const row = mkRow(type, data, nextZ(), me.id);
       void send([{ before: null, after: row }]);
       if (select) setSelectedId(row.id);
       return row;
     },
-    [me.id, nextZ, send, setSelectedId],
+    [me.id, mkRow, nextZ, send, setSelectedId],
   );
   const undo = useCallback(() => {
     const changes = undoStack.current.pop();
@@ -549,6 +583,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         zoom: c.zoom,
         tool: toolRef.current,
         watching: watchingRef.current,
+        page: pageRef.current,
         activity,
       };
       // Everyone on the relay gets every update straight away.
@@ -613,7 +648,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       window.removeEventListener("pagehide", onLeave);
     };
   }, [pushPresence]);
-  useEffect(schedulePresence, [camera, tool, watching, schedulePresence]);
+  useEffect(schedulePresence, [camera, tool, watching, page, schedulePresence]);
 
   // Activity: set while a gesture runs, then back to "what I have selected" shortly after it
   // ends (long enough for the saved result to reach everyone, so nothing flickers).
@@ -661,6 +696,8 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     return [...merged.values()].sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime());
   }, [sync.presence, sock.peers, me.id]);
   const online = useMemo(() => others.filter((p) => now - p.updated_at.getTime() < ONLINE_MS), [others, now]);
+  // Cursors, live activity and edge markers only for people on the same page.
+  const onlineHere = useMemo(() => online.filter((p) => (p.page ?? "main") === page), [online, page]);
   // The most recent other person, for the "was here" line when nobody else is online.
   const partner = online[0] ?? others[0] ?? null;
   const partnerOnline = online.length > 0;
@@ -686,6 +723,13 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   // screen (a laptop's view on a phone, or a phone's view on a laptop).
   const followed = followId ? online.find((p) => p.user_id === followId) ?? null : null;
   const followActive = !!followed;
+  const followedPage = followed?.page ?? null;
+  useEffect(() => {
+    // Follow them onto their page.
+    if (followedPage && followedPage !== pageRef.current) {
+      setPageChoice(followedPage);
+    }
+  }, [followedPage]);
   useEffect(() => {
     if (!followed) return;
     const fz = followed.zoom || 1;
@@ -710,7 +754,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     const margin = 28;
     const top = 84;
     const bottom = vp.h - (vp.w <= 720 ? 150 : 100);
-    return online.flatMap((p) => {
+    return onlineHere.flatMap((p) => {
       const hasCursor = p.cursor_x != null && p.cursor_y != null;
       const fz = p.zoom || 1;
       const wx = hasCursor ? p.cursor_x! : (p.view_w / 2 - p.view_x) / fz;
@@ -722,7 +766,45 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       const y = Math.min(Math.max(sy, top + margin), bottom - margin);
       return [{ p, x, y, wx, wy, angle: Math.atan2(sy - y, sx - x) }];
     });
-  }, [online, camera, vp]);
+  }, [onlineHere, camera, vp]);
+
+  /* ---------- Chat ---------- */
+  const [chatOpen, setChatOpen] = useState(false);
+  const chatSeenKey = `drawory:chat-seen:${boardId}`;
+  const [chatSeen, setChatSeen] = useState<number>(() => {
+    try {
+      return Number(localStorage.getItem(chatSeenKey)) || 0;
+    } catch {
+      return 0;
+    }
+  });
+  const chat = sync.chat;
+  const newestChatId = chat?.length ? Number(chat[0].id) : 0;
+  const unread = chatOpen || !chat ? 0 : chat.filter((m) => m.user_id !== me.id && Number(m.id) > chatSeen).length;
+  // Opening the chat (or reading it while open) marks everything as seen.
+  useEffect(() => {
+    if (!chatOpen || !newestChatId || newestChatId <= chatSeen) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- remember what's been read
+    setChatSeen(newestChatId);
+    try {
+      localStorage.setItem(chatSeenKey, String(newestChatId));
+    } catch {}
+  }, [chatOpen, newestChatId, chatSeen, chatSeenKey]);
+  // A new message while the chat is closed: show a short preview.
+  const lastChatId = useRef<number | null>(null);
+  useEffect(() => {
+    if (!chat) return;
+    const prev = lastChatId.current;
+    lastChatId.current = newestChatId;
+    if (prev === null || chatOpen) return;
+    const fresh = chat.filter((m) => Number(m.id) > prev && m.user_id !== me.id);
+    const m = fresh[0];
+    if (m) showToast(`${m.name}: ${m.body.length > 70 ? `${m.body.slice(0, 70)}…` : m.body}`, false, { label: "Reply", run: () => setChatOpen(true) });
+  }, [chat, newestChatId, chatOpen, me.id, showToast]);
+  const sendChat = useCallback(
+    (body: string) => api.sendMessage(boardId, { user_id: me.id, name: me.name, color: me.color, body }),
+    [boardId, me],
+  );
 
   /* ---------- Signals: hearts, synced video ---------- */
   const spawnHearts = useCallback((x: number, y: number) => {
@@ -800,6 +882,47 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     const r = e.currentTarget.getBoundingClientRect();
     spawnHearts(r.left + r.width / 2, r.top + r.height);
     void sendSignal("wave").catch(() => showToast("Couldn't send the wave"));
+  }
+
+  /* ---------- Pages ---------- */
+  function switchPage(id: string) {
+    if (id === page) return;
+    setPageChoice(id);
+    try {
+      localStorage.setItem(pageKey, id);
+    } catch {}
+    setSelectedIds([]);
+    setEditingId(null);
+    setMarquee(null);
+    endActivity(0);
+  }
+  async function savePages(next: BoardPage[]) {
+    setBoard((b) => (b ? { ...b, pages: next } : b));
+    try {
+      setBoard(await api.updateBoard(boardId, { pages: next, from: me.id }));
+    } catch {
+      showToast("Couldn't save the pages");
+      loadBoard();
+    }
+  }
+  function addPage() {
+    const id = `p-${Math.random().toString(36).slice(2, 8)}`;
+    void savePages([...pages, { id, name: `Page ${pages.length + 1}` }]);
+    switchPage(id);
+  }
+  function deletePage(id: string) {
+    if (pages.length <= 1) return;
+    const victims = [...committedRef.current.values()].filter((r) => pageOf(r) === id);
+    if (victims.length) void send(victims.map((r) => ({ before: r, after: null })), false);
+    const rest = pages.filter((p) => p.id !== id);
+    void savePages(rest);
+    if (id === page) switchPage(rest[0].id);
+  }
+  function clearPage() {
+    const ids = [...rowsRef.current.keys()];
+    if (!ids.length) return;
+    deleteIds(ids);
+    showToast(`Cleared ${ids.length} ${ids.length === 1 ? "thing" : "things"}`, false, { label: "Undo", run: undo });
   }
 
   async function copyInvite() {
@@ -897,6 +1020,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       z: nextZ(),
       author: me.id,
       authorName: me.name,
+      page: pageRef.current,
     });
     if (res.txid) await awaitTxId(res.txid);
     setSelectedId(id);
@@ -1090,7 +1214,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       case "pen": {
         const pressure = e.pointerType === "pen" ? e.pressure || 0.5 : 0.5;
         gesture.current = { kind: "draw", points: [[w.x, w.y, pressure]] };
-        setDraft(makeRow("stroke", strokeData([[w.x, w.y, pressure]]), nextZ(), me.id));
+        setDraft(mkRow("stroke", strokeData([[w.x, w.y, pressure]]), nextZ(), me.id));
         shareStroke([[w.x, w.y]]);
         return;
       }
@@ -1112,8 +1236,8 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
           setEditingId(existing.id);
           return;
         }
-        const size = TEXT_SIZES[sizeId - 1] ?? 28;
-        const row = makeRow("text", { x: w.x, y: w.y - size * 0.7, text: "", size, color: colorId, font: fontId }, nextZ(), me.id);
+        const size = textSize;
+        const row = mkRow("text", { x: w.x, y: w.y - size * 0.7, text: "", size, color: colorId, font: fontId }, nextZ(), me.id);
         preview([{ id: row.id, row }]);
         setEditingId(row.id);
         setActivity({ k: "typing", id: row.id, text: "", d: row.data });
@@ -1181,12 +1305,12 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
           const pad = 20;
           const x = Math.min(g.ox, g.ox + dx) - pad;
           const y = Math.min(g.oy, g.oy + dy) - pad;
-          shapeRow = makeRow("arrow", {
+          shapeRow = mkRow("arrow", {
             x, y, w: Math.abs(dx) + pad * 2, h: Math.abs(dy) + pad * 2, color: colorId, size: width,
             points: [[g.ox - x, g.oy - y], [g.ox + dx - x, g.oy + dy - y]],
           }, nextZ(), me.id);
         } else {
-          shapeRow = makeRow(g.type, {
+          shapeRow = mkRow(g.type, {
             x: Math.min(g.ox, g.ox + dx), y: Math.min(g.oy, g.oy + dy), w: Math.abs(dx), h: Math.abs(dy), color: colorId, size: width,
           }, nextZ(), me.id);
         }
@@ -1397,7 +1521,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       const link = detectLink(text);
       if (link) addLink(link).catch((err) => showToast(err.message));
       else {
-        const size = TEXT_SIZES[sizeId - 1] ?? 28;
+        const size = textSize;
         addRow("text", { ...placeNear(text.length * size * 0.5, size), text: text.slice(0, 5000), size, color: colorId, font: fontId });
       }
     };
@@ -1414,9 +1538,9 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   /* ---------- Context for element views ---------- */
   const watchers = useMemo(() => {
     const map: Record<string, string[]> = {};
-    for (const p of online) if (p.watching) (map[p.watching] ??= []).push(p.name);
+    for (const p of onlineHere) if (p.watching) (map[p.watching] ??= []).push(p.name);
     return map;
-  }, [online]);
+  }, [onlineHere]);
   const sendYt = useCallback(
     (elementId: string, cmd: Omit<YtCommand, "sentAt">) => {
       void sendSignal("yt", { elementId, ...cmd, sentAt: serverNow() }).catch(() => {});
@@ -1488,7 +1612,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     const fake = (id: string, type: ElementType, data: ElementData): ElementRow => ({
       id, type, data, z: 1e6, created_by: null, created_at: new Date(0), updated_at: new Date(0),
     });
-    for (const p of online) {
+    for (const p of onlineHere) {
       const a = p.activity;
       if (!a) continue;
       const who = { color: p.color, name: p.name };
@@ -1528,7 +1652,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       }
     }
     return { override, marks, drafts, boxes, selections };
-  }, [online, rowsById]);
+  }, [onlineHere, rowsById]);
 
   const ACTIVITY_VERB: Record<Activity["k"], string> = {
     select: "",
@@ -1549,7 +1673,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         return o && !overlay.has(r.id) ? { ...r, data: { ...r.data, ...o } } : r;
       })
     : rows;
-  const displayRows = laneOpen ? laneRows ?? [] : liveRows;
+  const displayRows = laneOpen ? (laneRows ?? []).filter((r) => pageOf(r) === page) : liveRows;
   // Where things are on screen right now, including others' drags (for their selection outlines).
   const liveById = liveRows === rows ? rowsById : new Map(liveRows.map((r) => [r.id, r]));
   const placesLayer = displayRows.filter((r) => r.type === "place");
@@ -1562,19 +1686,24 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   const selectedTexts = selectedRows.filter((r) => r.type === "text");
   const showFonts = !laneOpen && (tool === "text" || (tool === "select" && selectedTexts.length > 0));
   const activeFont = tool === "select" && selectedTexts[0] ? selectedTexts[0].data.font ?? "clean" : fontId;
+  const activeTextSize = tool === "select" && selectedTexts[0] ? selectedTexts[0].data.size ?? 28 : textSize;
   const status = sync.status;
   const selBox = selectedRows.length ? unionBounds(selectedRows) : null;
   const iLike = selectedRows.length > 0 && selectedRows.every((r) => r.data.likes?.includes(me.id));
 
-  function applyStyle(next: { color?: string; size?: number; font?: string }) {
+  function applyStyle(next: { color?: string; size?: number; font?: string; fontSize?: number }) {
     if (next.color) setColorId(next.color);
     if (next.size) setSizeId(next.size);
     if (next.font) setFontId(next.font);
+    if (next.fontSize) setTextSize(next.fontSize);
+    // The thin/medium/bold buttons also set the size of new text.
+    else if (next.size && tool === "text") setTextSize(TEXT_SIZES[next.size - 1]);
     if (tool !== "select" || !stylable.length) return;
     const changes = stylable.flatMap((r) => {
       const data: Partial<ElementData> = {};
       if (next.color) data.color = next.color;
       if (next.font && r.type === "text") data.font = next.font;
+      if (next.fontSize && r.type === "text") data.size = next.fontSize;
       if (next.size) {
         if (r.type === "text") data.size = TEXT_SIZES[next.size - 1];
         else if (r.type !== "stroke") data.size = SHAPE_WIDTHS[next.size - 1]; // stroke width is baked into its shape
@@ -1718,7 +1847,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
             />
           )}
           {!laneOpen &&
-            online.map((p) =>
+            onlineHere.map((p) =>
               p.cursor_x == null || p.cursor_y == null ? null : (
                 <RemoteCursor
                   key={p.user_id}
@@ -1847,6 +1976,16 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
                   <span className="room-name">{board?.name || "Untitled room"}</span>
                 </div>
               </div>
+              <PagesBar
+                pages={pages}
+                current={page}
+                count={rows.length}
+                onSwitch={switchPage}
+                onAdd={addPage}
+                onRename={(id, name) => savePages(pages.map((p) => (p.id === id ? { ...p, name } : p)))}
+                onDelete={deletePage}
+                onClear={clearPage}
+              />
               <button type="button" className="pill code-chip" onClick={copyInvite} title="Copy the invite link" aria-label={`Room code ${displayCode(boardId)}. Copy the invite link`}>
                 <span className="code-label">Code</span>
                 <span className="mono">{displayCode(boardId)}</span>
@@ -1935,6 +2074,17 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
                   <Icon name="eye" />
                 </button>
               </div>
+              <button
+                type="button"
+                className="icon-btn surface theme-btn chat-btn"
+                aria-label={unread ? `Chat, ${unread} unread` : "Chat"}
+                aria-expanded={chatOpen}
+                title="Chat"
+                onClick={() => setChatOpen((o) => !o)}
+              >
+                <Icon name="chat" />
+                {unread > 0 && <span className="badge">{unread > 9 ? "9+" : unread}</span>}
+              </button>
               <button
                 type="button"
                 className="icon-btn surface theme-btn"
@@ -2061,6 +2211,8 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
                           </button>
                         ))}
                       </div>
+                      <div className="ctrl-sep" />
+                      <TextSizeControl size={activeTextSize} onChange={(s) => applyStyle({ fontSize: s })} />
                     </>
                   )}
                 </div>
@@ -2110,10 +2262,24 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         </>
       )}
 
+      {chatOpen && !laneOpen && <ChatPanel messages={chat ?? []} me={me} onClose={() => setChatOpen(false)} onSend={sendChat} />}
+
       {toast && (
         <div className="toast" role="status" key={toast.id}>
           {toast.heart && <Icon name="wave" size={18} style={{ color: "var(--accent)" }} />}
           {toast.text}
+          {toast.action && (
+            <button
+              type="button"
+              className="toast-action"
+              onClick={() => {
+                toast.action!.run();
+                setToast(null);
+              }}
+            >
+              {toast.action.label}
+            </button>
+          )}
         </div>
       )}
 

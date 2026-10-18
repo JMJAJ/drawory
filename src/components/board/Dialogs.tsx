@@ -260,6 +260,32 @@ export function AddMediaDialog({
             <span className="hide-coarse">or click to browse · </span>up to 25 MB each
           </span>
         </button>
+        <button
+          type="button"
+          className="btn"
+          disabled={busy}
+          onClick={async () => {
+            setError("");
+            try {
+              // Images copied anywhere (a screenshot, "Copy image" in a browser) without needing Ctrl+V.
+              const items = await navigator.clipboard.read();
+              const files: File[] = [];
+              for (const item of items) {
+                const type = item.types.find((t) => t.startsWith("image/"));
+                if (type) {
+                  const blob = await item.getType(type);
+                  files.push(new File([blob], `pasted.${type.split("/")[1] || "png"}`, { type }));
+                }
+              }
+              if (files.length) void run(() => onAddFiles(files));
+              else setError("There's no image on your clipboard. Copy one first.");
+            } catch {
+              setError("Your browser didn't allow reading the clipboard. Press Ctrl+V on the board instead.");
+            }
+          }}
+        >
+          <Icon name="image" size={18} /> Paste image from clipboard
+        </button>
         <input
           ref={fileInput}
           type="file"

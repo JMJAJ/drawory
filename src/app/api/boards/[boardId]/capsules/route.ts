@@ -25,6 +25,7 @@ export const POST = handler<Ctx>(async (req, { params }) => {
     y: finiteNumber(b.y),
     w: 300,
     title: cleanString(b.title, 120).trim() || "Time capsule",
+    page: cleanString(b.page, 24) || undefined,
     unlockAt: unlockAt.toISOString(),
     sealedByName: authorName,
     count: 1,

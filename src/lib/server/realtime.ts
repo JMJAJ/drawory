@@ -1,7 +1,7 @@
 import "server-only";
 import { createRealtime, rawSql } from "@neon/realtime/server";
 import { BOARD_QUERIES } from "@/lib/server/queries";
-import type { ElementRow, LiveQueryName, PresenceRow, SignalRow } from "@/lib/types";
+import type { ChatRow, ElementRow, LiveQueryName, PresenceRow, SignalRow } from "@/lib/types";
 
 function dbName() {
   const url = process.env.DATABASE_URL;
@@ -37,5 +37,7 @@ export async function sealBoardQuery(boardId: string, name: LiveQueryName) {
       return realtime.seal({ query: rawSql<PresenceRow>(BOARD_QUERIES.presence, [boardId]) });
     case "signals":
       return realtime.seal({ query: rawSql<SignalRow>(BOARD_QUERIES.signals, [boardId]) });
+    case "chat":
+      return realtime.seal({ query: rawSql<ChatRow>(BOARD_QUERIES.chat, [boardId]) });
   }
 }

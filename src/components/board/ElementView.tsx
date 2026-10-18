@@ -128,15 +128,46 @@ function TextView({ row, editing }: { row: ElementRow; editing: boolean }) {
   );
 }
 
+/** Card colors for checklists ("" = plain). */
+const NOTE_COLORS = [
+  { id: "", label: "Plain", value: "var(--border-strong)" },
+  { id: "rose", label: "Rose", value: "#E5484D" },
+  { id: "amber", label: "Amber", value: "#E39A1C" },
+  { id: "green", label: "Green", value: "#2E9E6A" },
+  { id: "teal", label: "Teal", value: "#14A38F" },
+  { id: "blue", label: "Blue", value: "#3B7BE0" },
+  { id: "violet", label: "Violet", value: "#8E63DA" },
+];
+/** Tag chips get a color from their name, so the same tag always looks the same. */
+const TAG_COLORS = ["#E5484D", "#E39A1C", "#2E9E6A", "#14A38F", "#3B7BE0", "#8E63DA", "#D6409F", "#7C8A1C"];
+const TAG = /(^|\s)#([\p{L}\p{N}_-]{1,24})/gu;
+
+function tagColor(tag: string) {
+  let h = 0;
+  for (const ch of tag.toLowerCase()) h = (h * 31 + ch.codePointAt(0)!) >>> 0;
+  return TAG_COLORS[h % TAG_COLORS.length];
+}
+function splitTags(text: string) {
+  const tags = [...text.matchAll(TAG)].map((m) => m[2]);
+  return { label: text.replace(TAG, "$1").replace(/\s{2,}/g, " ").trim(), tags };
+}
+
 function NoteView({ row, editing }: { row: ElementRow; editing: boolean }) {
   const ctx = useBoard();
   const items = row.data.items ?? [];
   const done = items.filter((i) => i.done).length;
   const [draft, setDraft] = useState("");
+  const [filter, setFilter] = useState<string | null>(null);
   const setItems = (next: typeof items, commit = true) => ctx.patch(row.id, { items: next }, commit);
+  const card = NOTE_COLORS.find((c) => c.id === (row.data.color ?? "")) ?? NOTE_COLORS[0];
+
+  const parsed = items.map((item) => ({ item, ...splitTags(item.text) }));
+  const allTags = [...new Set(parsed.flatMap((p) => p.tags.map((t) => t.toLowerCase())))];
+  const activeFilter = filter && allTags.includes(filter) ? filter : null;
+  const shown = editing || !activeFilter ? parsed : parsed.filter((p) => p.tags.some((t) => t.toLowerCase() === activeFilter));
 
   return (
-    <div className="card note">
+    <div className={`card note${card.id ? " tinted" : ""}`} style={{ ["--note" as string]: card.value }}>
       <div className="note-head">
         {editing ? (
           <input
@@ -158,13 +189,52 @@ function NoteView({ row, editing }: { row: ElementRow; editing: boolean }) {
       <div className="progress">
         <div style={{ width: items.length ? `${(done / items.length) * 100}%` : 0 }} />
       </div>
-      {items.map((item) => (
+
+      {editing && (
+        <div className="note-colors" role="radiogroup" aria-label="List color">
+          {NOTE_COLORS.map((c) => (
+            <button
+              key={c.id || "plain"}
+              type="button"
+              role="radio"
+              aria-checked={card.id === c.id}
+              aria-label={c.label}
+              title={c.label}
+              className="note-color"
+              data-interactive
+              style={{ background: c.value }}
+              onClick={() => ctx.patch(row.id, { color: c.id })}
+            />
+          ))}
+        </div>
+      )}
+
+      {!editing && allTags.length > 0 && (
+        <div className="tag-filter" role="group" aria-label="Filter by tag">
+          {allTags.map((t) => (
+            <button
+              key={t}
+              type="button"
+              className="tag"
+              data-interactive
+              aria-pressed={activeFilter === t}
+              title={activeFilter === t ? "Show everything" : `Only show #${t}`}
+              style={{ ["--tag" as string]: tagColor(t) }}
+              onClick={() => setFilter(activeFilter === t ? null : t)}
+            >
+              #{t}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {shown.map(({ item, label, tags }) => (
         <div key={item.id} className={`check-row${item.done ? " done" : ""}`}>
           <button
             type="button"
             className="check-box"
             data-interactive
-            aria-label={`${item.done ? "Uncheck" : "Check"} ${item.text}`}
+            aria-label={`${item.done ? "Uncheck" : "Check"} ${label}`}
             aria-pressed={item.done}
             onClick={() => setItems(items.map((i) => (i.id === item.id ? { ...i, done: !i.done } : i)))}
           >
@@ -187,17 +257,25 @@ function NoteView({ row, editing }: { row: ElementRow; editing: boolean }) {
                 type="button"
                 className="icon-btn sm"
                 data-interactive
-                aria-label={`Remove ${item.text}`}
+                aria-label={`Remove ${label}`}
                 onClick={() => setItems(items.filter((i) => i.id !== item.id))}
               >
                 <Icon name="close" size={14} />
               </button>
             </>
           ) : (
-            <span className="check-text">{item.text}</span>
+            <span className="check-text">
+              {label}
+              {tags.map((t) => (
+                <span key={t} className="tag small" style={{ ["--tag" as string]: tagColor(t) }}>
+                  #{t}
+                </span>
+              ))}
+            </span>
           )}
         </div>
       ))}
+      {!editing && activeFilter && shown.length === 0 && <p className="muted note-empty">Nothing tagged #{activeFilter}.</p>}
       {editing && (
         <form
           className="check-row"
@@ -213,7 +291,7 @@ function NoteView({ row, editing }: { row: ElementRow; editing: boolean }) {
           <input
             className="inline"
             aria-label="Add an item"
-            placeholder="Add an item, press Enter"
+            placeholder="Add an item · #tags work"
             value={draft}
             data-interactive
             autoFocus={items.length > 0}
@@ -337,9 +415,29 @@ function YouTubeView({ row }: { row: ElementRow }) {
   const d = row.data;
   const host = useRef<HTMLDivElement>(null);
   const player = useRef<YTPlayer | null>(null);
+  /** Ignore our own player's events briefly after applying someone else's command (no echo). */
   const remoteUntil = useRef(0);
+  /** Whether I was the last to press play/pause; only that person sends the periodic time. */
+  const leading = useRef(false);
+  /** The latest shared playback state we heard, to join a video already in progress. */
+  const shared = useRef<{ time: number; at: number; playing: boolean } | null>(null);
   const [playing, setPlaying] = useState(false);
-  const { sendYt, onYt, setWatching, serverNow } = ctx;
+  const { sendYt, onYt, setWatching, serverNow, patch } = ctx;
+
+  // Older cards were saved without a title: look it up once and save it for everyone.
+  useEffect(() => {
+    if (d.title || !d.url || ctx.readOnly) return;
+    let cancelled = false;
+    void fetch(`/api/unfurl?url=${encodeURIComponent(d.url)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((m) => {
+        if (!cancelled && m?.title && m.title !== m.site) patch(row.id, { title: m.title });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [d.title, d.url, row.id, patch, ctx.readOnly]);
 
   useEffect(() => {
     if (!d.videoId || !host.current) return;
@@ -358,14 +456,23 @@ function YouTubeView({ row }: { row: ElementRow }) {
             const p = player.current;
             if (!p) return;
             const isPlaying = e.data === YT.PlayerState.PLAYING;
-            if (e.data === YT.PlayerState.PLAYING || e.data === YT.PlayerState.PAUSED) {
-              setPlaying(isPlaying);
-              setWatching(isPlaying ? row.id : null);
-              // Don't echo a change the other person just made.
-              if (Date.now() > remoteUntil.current) {
-                sendYt(row.id, { action: isPlaying ? "play" : "pause", time: p.getCurrentTime() });
+            if (e.data !== YT.PlayerState.PLAYING && e.data !== YT.PlayerState.PAUSED) return;
+            setPlaying(isPlaying);
+            setWatching(isPlaying ? row.id : null);
+            // A change the other person just made reached us: don't send it back.
+            if (Date.now() < remoteUntil.current) return;
+            const s = shared.current;
+            const expected = s && s.playing ? s.time + (serverNow() - s.at) / 1000 : null;
+            if (isPlaying && expected !== null && serverNow() - s!.at < 10_000) {
+              // Someone is already watching: join them where they are instead of rewinding everyone.
+              if (Math.abs(p.getCurrentTime() - expected) > 2) {
+                remoteUntil.current = Date.now() + 1500;
+                p.seekTo(expected, true);
               }
+              return;
             }
+            leading.current = true;
+            sendYt(row.id, { action: isPlaying ? "play" : "pause", time: p.getCurrentTime() });
           },
         },
       });
@@ -377,16 +484,36 @@ function YouTubeView({ row }: { row: ElementRow }) {
       mount.remove();
       setWatching(null);
     };
-  }, [d.videoId, row.id, sendYt, setWatching]);
+  }, [d.videoId, row.id, sendYt, setWatching, serverNow]);
+
+  // While I'm the one in charge and it's playing, share where we are every few seconds.
+  useEffect(() => {
+    if (!playing) return;
+    const t = setInterval(() => {
+      const p = player.current;
+      if (p && leading.current) sendYt(row.id, { action: "tick", time: p.getCurrentTime() });
+    }, 4_000);
+    return () => clearInterval(t);
+  }, [playing, row.id, sendYt]);
 
   useEffect(
     () =>
       onYt(row.id, (cmd) => {
+        const lag = Math.min(3, Math.max(0, (serverNow() - cmd.sentAt) / 1000));
+        const target = cmd.action === "pause" ? cmd.time : cmd.time + lag;
+        shared.current = { time: target, at: serverNow(), playing: cmd.action !== "pause" };
         const p = player.current;
         if (!p) return;
+        if (cmd.action === "tick") {
+          // Only nudge someone who is watching and has drifted; never start or stop them.
+          if (p.getPlayerState() === 1 && Math.abs(p.getCurrentTime() - target) > 2) {
+            remoteUntil.current = Date.now() + 1500;
+            p.seekTo(target, true);
+          }
+          return;
+        }
+        leading.current = false;
         remoteUntil.current = Date.now() + 1500;
-        const lag = Math.min(3, Math.max(0, (serverNow() - cmd.sentAt) / 1000));
-        const target = cmd.action === "play" ? cmd.time + lag : cmd.time;
         if (Math.abs(p.getCurrentTime() - target) > 1.2) p.seekTo(target, true);
         if (cmd.action === "play") p.playVideo();
         else p.pauseVideo();
@@ -398,25 +525,23 @@ function YouTubeView({ row }: { row: ElementRow }) {
   const together = playing && others.length > 0;
   const partnerOnly = !playing && others.length > 0;
   const names = others.length > 2 ? `${others.slice(0, 2).join(", ")} +${others.length - 2}` : others.join(" & ");
-  const height = (d.h ?? 300) - 74;
 
   return (
     <div className="card yt-card">
-      <div className="yt-frame" style={{ height }}>
+      {/* Always 16:9, whatever width the card is resized to. */}
+      <div className="yt-frame">
         {(together || partnerOnly) && (
           <div className="together-badge">
             <Icon name="sync" size={14} strokeWidth={2.4} />
             {together ? `Watching with ${names}` : `${names} ${others.length > 1 ? "are" : "is"} watching`}
           </div>
         )}
-        <div ref={host} />
+        <div ref={host} className="yt-host" />
       </div>
       <div className="yt-meta">
         <div>
           <div className="yt-title">{d.title || "YouTube video"}</div>
-          <div className="yt-sub">
-            {together ? "In sync · you're both here" : "Play, pause and seek stay in sync"}
-          </div>
+          <div className="yt-sub">{together ? `In sync with ${names}` : "Play, pause and seek stay in sync"}</div>
         </div>
         <Icon name="youtube" size={22} style={{ color: "var(--muted)", flex: "none" }} />
       </div>
@@ -561,7 +686,7 @@ interface Props {
 
 export const ElementView = memo(function ElementView({ row, selected, solo, editing, likes, remote }: Props) {
   const b = bounds(row);
-  const autoHeight = ["text", "note", "audio", "capsule", "link"].includes(row.type);
+  const autoHeight = ["text", "note", "audio", "capsule", "link", "youtube"].includes(row.type);
   const autoWidth = row.type === "text";
   const resizable = RESIZABLE[row.type];
 

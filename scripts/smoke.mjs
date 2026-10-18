@@ -56,7 +56,7 @@ check("Room keeps its name", meta.name === "Smoke room");
 
 // 2. Seal live queries
 const sealed = {};
-for (const q of ["elements", "presence", "signals"]) {
+for (const q of ["elements", "presence", "signals", "chat"]) {
   const res = await call(`/api/boards/${BOARD}/live`, json({ query: q }));
   sealed[q] = await res.json();
   check(`Seals the ${q} live query`, res.ok && typeof sealed[q].capability === "string" && sealed[q].expiresAt > Date.now());
@@ -67,6 +67,7 @@ const client = createRealtimeClient({ url: process.env.NEON_REALTIME_URL, logLev
 const elSub = client.subscribe(sealed.elements);
 const prSub = client.subscribe(sealed.presence);
 const sgSub = client.subscribe(sealed.signals);
+const chSub = client.subscribe(sealed.chat);
 const live = await waitFor(() => elSub.getSnapshot().status === "live" && prSub.getSnapshot().status === "live");
 check("Realtime subscriptions go live", live, `elements=${elSub.getSnapshot().status} presence=${prSub.getSnapshot().status}`);
 
@@ -144,6 +145,37 @@ check("Delete streams to subscribers", await waitFor(() => !(elSub.getSnapshot()
 // 9. Sealed queries renew
 const renewed = await (await call(`/api/boards/${BOARD}/live`, json({ query: "elements" }))).json();
 await elSub.renew(renewed).then(() => check("Sealed query renews", true), (e) => check("Sealed query renews", false, e.message));
+
+// 10. Chat
+const msg = await call(`/api/boards/${BOARD}/messages`, json({ user_id: "smoke-user", name: "Smoke", color: "#2F6BD0", body: "hello room" }));
+check("Chat message saved", msg.status === 201);
+check("Chat message streams", await waitFor(() => (chSub.getSnapshot().data ?? []).some((m) => m.body === "hello room" && m.name === "Smoke")));
+
+// 11. Pages
+const pagesRes = await call(`/api/boards/${BOARD}`, json({ pages: [{ id: "main", name: "Doodles" }, { id: "p-plans", name: "Plans" }], from: "smoke" }, "PATCH"));
+const pagesBody = await pagesRes.json();
+check("Saves a room's pages", pagesRes.ok && pagesBody.pages?.length === 2 && pagesBody.pages[1].name === "Plans");
+const badPages = await call(`/api/boards/${BOARD}`, json({ pages: [], from: "smoke" }, "PATCH"));
+check("Refuses a room with no pages", badPages.status === 400);
+
+// 12. Cloudinary uploads (only when configured)
+const sigRes = await call(`/api/boards/${BOARD}/upload-signature`, { method: "POST" });
+if (sigRes.status === 404) {
+  console.log("SKIP  Cloudinary not configured (uploads go to Postgres)");
+} else {
+  const sig = await sigRes.json();
+  check("Signs a Cloudinary upload for the room's folder", sigRes.ok && sig.folder === `drawory/${BOARD}` && /^[0-9a-f]{40}$/.test(sig.signature));
+  const up = new FormData();
+  up.append("file", new Blob([png], { type: "image/png" }), "dot.png");
+  for (const k of ["api_key", "timestamp", "folder", "signature"]) up.append(k, String(sig[k === "api_key" ? "apiKey" : k]));
+  const cl = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloudName}/auto/upload`, { method: "POST", body: up });
+  const clBody = await cl.json();
+  check("Uploads straight to Cloudinary", cl.ok && typeof clBody.secure_url === "string", clBody.error?.message ?? clBody.public_id);
+  if (cl.ok) {
+    const served = await fetch(clBody.secure_url.replace("/upload/", "/upload/f_auto,q_auto/"));
+    check("Cloudinary serves it back", served.ok, `${served.status} ${served.headers.get("content-type")}`);
+  }
+}
 
 client.close();
 
