@@ -9,6 +9,7 @@ import { proximityFactor, volumeKeeper, type Listener } from "@/lib/client/proxi
 import { stickerSrc } from "@/lib/stickers";
 import type { ElementRow } from "@/lib/types";
 import { ChatThread } from "./ChatThread";
+import { WindowView } from "./WindowView";
 import { useBoard } from "./context";
 import { loadYouTube, type YTPlayer } from "./youtube";
 
@@ -898,7 +899,7 @@ interface Props {
 
 export const ElementView = memo(function ElementView({ row, selected, solo, editing, likes, remote }: Props) {
   const b = bounds(row);
-  const autoHeight = ["text", "note", "audio", "capsule", "link", "youtube"].includes(row.type);
+  const autoHeight = ["text", "note", "audio", "capsule", "link", "youtube", "window"].includes(row.type);
   const autoWidth = row.type === "text";
   const resizable = RESIZABLE[row.type];
 
@@ -947,6 +948,9 @@ export const ElementView = memo(function ElementView({ row, selected, solo, edit
       break;
     case "sticky":
       content = <StickyView row={row} editing={editing} />;
+      break;
+    case "window":
+      content = <WindowView row={row} editing={editing} />;
       break;
     case "sticker":
       // eslint-disable-next-line @next/next/no-img-element

@@ -158,6 +158,22 @@ await call(`/api/boards/${BOARD}/messages`, json({ user_id: "smoke-user", name: 
 check("Chat box message streams with its thread", await waitFor(() => (chSub.getSnapshot().data ?? []).some((m) => m.thread === boxId && m.body === "in a box")));
 await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [{ op: "delete", id: boxId }] }));
 check("Deleting a chat box deletes its messages", await waitFor(() => !(chSub.getSnapshot().data ?? []).some((m) => m.thread === boxId)));
+// 10c. Windows: a chat block's messages go when the block is removed, or the whole window is
+const winId = crypto.randomUUID();
+const chatA = crypto.randomUUID();
+const chatB = crypto.randomUUID();
+const winData = (blocks) => ({ x: 0, y: 0, w: 640, title: "Plans", blocks });
+const rank = { id: crypto.randomUUID(), kind: "ranking", title: "Ideas", span: 4, items: [{ id: "o1", text: "Bowling" }], votes: { o1: ["smoke-user"] } };
+await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [{ op: "upsert", id: winId, type: "window", z: 4, data: winData([rank, { id: chatA, kind: "chat", span: 6 }, { id: chatB, kind: "chat", span: 6 }]) }] }));
+check("Window streams with its blocks", await waitFor(() => (elSub.getSnapshot().data ?? []).some((r) => r.id === winId && r.data.blocks?.length === 3)));
+await call(`/api/boards/${BOARD}/messages`, json({ user_id: "smoke-user", name: "Smoke", color: "#2F6BD0", body: "block a", thread: chatA }));
+await call(`/api/boards/${BOARD}/messages`, json({ user_id: "smoke-user", name: "Smoke", color: "#2F6BD0", body: "block b", thread: chatB }));
+check("Chat block messages stream", await waitFor(() => ["block a", "block b"].every((b) => (chSub.getSnapshot().data ?? []).some((m) => m.body === b))));
+await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [{ op: "upsert", id: winId, type: "window", z: 4, data: winData([rank, { id: chatB, kind: "chat", span: 6 }]) }] }));
+check("Removing a chat block deletes its messages", await waitFor(() => !(chSub.getSnapshot().data ?? []).some((m) => m.thread === chatA)));
+check("Other chat blocks keep theirs", (chSub.getSnapshot().data ?? []).some((m) => m.thread === chatB));
+await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [{ op: "delete", id: winId }] }));
+check("Deleting a window deletes its chats", await waitFor(() => !(chSub.getSnapshot().data ?? []).some((m) => m.thread === chatB)));
 check("Room chat messages are untouched", (chSub.getSnapshot().data ?? []).some((m) => m.body === "hello room"));
 
 // 11. Pages

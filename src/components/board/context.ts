@@ -27,6 +27,8 @@ export interface BoardCtx {
   /** Shares what's being typed, so others see it letter by letter. */
   reportTyping(id: string, text: string): void;
   stopEditing(): void;
+  /** Opens an element for editing (a window's Edit button). */
+  startEditing(id: string): void;
   sendYt(elementId: string, cmd: Omit<YtCommand, "sentAt">): void;
   onYt(elementId: string, handler: (cmd: YtCommand) => void): () => void;
   setWatching(elementId: string | null): void;

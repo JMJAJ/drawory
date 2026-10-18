@@ -46,7 +46,11 @@ export const RESIZABLE: Partial<Record<ElementType, "free" | "aspect" | "width" 
   audio: "width",
   chatbox: "free",
   sticky: "free",
+  window: "width",
 };
+
+/** Heights of auto-sized elements as they last rendered here, so selection and hit tests match. */
+export const measuredHeights = new Map<string, number>();
 
 /** Types the style bar can recolor. */
 export const STYLABLE: ElementType[] = ["stroke", "rect", "ellipse", "arrow", "text"];
@@ -60,12 +64,61 @@ export function bounds(el: Pick<ElementRow, "type" | "data">) {
     capsule: [d.w ?? 300, 190],
     link: [d.w ?? 280, d.image ? 240 : 130],
     sticky: [d.w ?? 200, d.h ?? 200],
+    window: [d.w ?? 640, measuredHeights.get((el as { id?: string }).id ?? "") ?? 120 + (d.blocks?.length ?? 0) * 110],
     // 16:9 video plus 10 px padding each side and the title row.
     youtube: [d.w ?? 480, ((d.w ?? 480) - 20) * (9 / 16) + 82],
   };
   const [fw, fh] = fallback[el.type] ?? [d.w ?? 100, d.h ?? 100];
-  const h = el.type === "youtube" ? fh : d.h ?? fh;
+  const h = el.type === "youtube" || el.type === "window" ? fh : d.h ?? fh;
   return { x: d.x, y: d.y, w: d.w && el.type !== "text" ? d.w : fw, h };
+}
+
+type Box = { x: number; y: number; w: number; h: number };
+export type SnapGuide = { axis: "x" | "y"; at: number; from: number; to: number };
+
+/** Gap left between items docked side by side. */
+export const DOCK_GAP = 24;
+
+/**
+ * Nudges a box being dragged so its edges or centre line up with nearby items, or so it docks
+ * next to one with a small gap. Returns how far to shift it and the guide lines to draw.
+ */
+export function snapBox(box: Box, others: readonly Box[], tolerance: number) {
+  let best = { x: { d: tolerance + 1, shift: 0, at: 0, o: null as Box | null }, y: { d: tolerance + 1, shift: 0, at: 0, o: null as Box | null } };
+  for (const o of others) {
+    // Only things close enough to matter.
+    if (o.x > box.x + box.w + 600 || o.x + o.w < box.x - 600 || o.y > box.y + box.h + 600 || o.y + o.h < box.y - 600) continue;
+    const xs: [number, number][] = [
+      [box.x, o.x], [box.x, o.x + o.w], [box.x + box.w, o.x + o.w], [box.x + box.w, o.x],
+      [box.x + box.w / 2, o.x + o.w / 2],
+      [box.x, o.x + o.w + DOCK_GAP], [box.x + box.w, o.x - DOCK_GAP],
+    ];
+    const ys: [number, number][] = [
+      [box.y, o.y], [box.y, o.y + o.h], [box.y + box.h, o.y + o.h], [box.y + box.h, o.y],
+      [box.y + box.h / 2, o.y + o.h / 2],
+      [box.y, o.y + o.h + DOCK_GAP], [box.y + box.h, o.y - DOCK_GAP],
+    ];
+    for (const [mine, theirs] of xs) {
+      const d = Math.abs(theirs - mine);
+      if (d < best.x.d) best = { ...best, x: { d, shift: theirs - mine, at: theirs, o } };
+    }
+    for (const [mine, theirs] of ys) {
+      const d = Math.abs(theirs - mine);
+      if (d < best.y.d) best = { ...best, y: { d, shift: theirs - mine, at: theirs, o } };
+    }
+  }
+  const sx = best.x.d <= tolerance ? best.x.shift : 0;
+  const sy = best.y.d <= tolerance ? best.y.shift : 0;
+  const guides: SnapGuide[] = [];
+  if (best.x.d <= tolerance && best.x.o) {
+    const o = best.x.o;
+    guides.push({ axis: "x", at: best.x.at, from: Math.min(o.y, box.y + sy), to: Math.max(o.y + o.h, box.y + sy + box.h) });
+  }
+  if (best.y.d <= tolerance && best.y.o) {
+    const o = best.y.o;
+    guides.push({ axis: "y", at: best.y.at, from: Math.min(o.x, box.x + sx), to: Math.max(o.x + o.w, box.x + sx + box.w) });
+  }
+  return { sx, sy, guides };
 }
 
 export function contains(outer: ReturnType<typeof bounds>, inner: ReturnType<typeof bounds>) {

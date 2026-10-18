@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon, type IconName } from "@/components/icons";
 import { api, ApiError } from "@/lib/client/api";
 import {
@@ -13,12 +13,14 @@ import {
   newId,
   normalizePoints,
   RESIZABLE,
+  snapBox,
   STROKE_COLORS,
   STROKE_SIZES,
   STYLABLE,
   FONTS,
   unionBounds,
   type Camera,
+  type SnapGuide,
 } from "@/lib/client/elements";
 import { displayCode, inviteLink, rememberRoom } from "@/lib/client/rooms";
 import { initials, textOn, type Me } from "@/lib/client/identity";
@@ -48,7 +50,7 @@ import type { Sticker } from "@/lib/stickers";
 
 type Tool =
   | "hand" | "select" | "pen" | "eraser" | "rect" | "ellipse" | "arrow" | "text"
-  | "note" | "sticky" | "sticker" | "chatbox" | "media" | "youtube" | "voice" | "capsule";
+  | "note" | "sticky" | "sticker" | "chatbox" | "window" | "media" | "youtube" | "voice" | "capsule";
 
 type Change = { before: ElementRow | null; after: ElementRow | null };
 
@@ -81,11 +83,23 @@ const TOOL_GROUPS: { id: Tool; label: string; icon: IconName; key?: string }[][]
     { id: "note", label: "Checklist", icon: "note", key: "n" },
     { id: "sticker", label: "Stickers", icon: "sticker", key: "s" },
     { id: "chatbox", label: "Chat box", icon: "chat", key: "c" },
+    { id: "window", label: "Window: ranking, lists, chat and more", icon: "window", key: "w" },
     { id: "media", label: "Photo, video or link", icon: "image" },
     { id: "youtube", label: "Watch together", icon: "youtube" },
     { id: "voice", label: "Voice note", icon: "mic" },
     { id: "capsule", label: "Time capsule", icon: "capsule" },
   ],
+];
+type AlignKind = "left" | "center" | "right" | "top" | "middle" | "bottom" | "across" | "down";
+const ALIGN_ACTIONS: { id: AlignKind; label: string; icon: IconName; group: number; spread?: boolean }[] = [
+  { id: "left", label: "Align left edges", icon: "alignLeft", group: 0 },
+  { id: "center", label: "Align centres", icon: "alignCenter", group: 0 },
+  { id: "right", label: "Align right edges", icon: "alignRight", group: 0 },
+  { id: "top", label: "Align top edges", icon: "alignTop", group: 1 },
+  { id: "middle", label: "Align middles", icon: "alignMiddle", group: 1 },
+  { id: "bottom", label: "Align bottom edges", icon: "alignBottom", group: 1 },
+  { id: "across", label: "Space evenly across", icon: "spreadAcross", group: 2, spread: true },
+  { id: "down", label: "Space evenly down", icon: "spreadDown", group: 2, spread: true },
 ];
 const KEY_TOOLS = Object.fromEntries(TOOL_GROUPS.flat().filter((t) => t.key).map((t) => [t.key!, t.id]));
 const DRAW_TOOLS: Tool[] = ["pen", "rect", "ellipse", "arrow", "text"];
@@ -105,7 +119,7 @@ const DEFAULT_PAGES: BoardPage[] = [{ id: "main", name: "Page 1" }];
 const pageOf = (r: { data: ElementData }) => r.data.page ?? "main";
 const NO_CHAT: readonly ChatRow[] = [];
 /** Types you can open for editing (double-click, double-tap or the pen button). */
-const EDITABLE: ElementType[] = ["text", "note", "image", "chatbox", "sticky"];
+const EDITABLE: ElementType[] = ["text", "note", "image", "chatbox", "sticky", "window"];
 
 function isEditable(t: EventTarget | null) {
   const el = t as HTMLElement | null;
@@ -246,6 +260,10 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   >(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [stickersOpen, setStickersOpen] = useState(false);
+  // Lines shown while a dragged item snaps to others.
+  const [guides, setGuides] = useState<SnapGuide[]>([]);
+  // The align menu belongs to one selection; picking something else closes it.
+  const [alignFor, setAlignFor] = useState<string | null>(null);
   const [toast, setToast] = useState<{ id: number; text: string; heart?: boolean; action?: { label: string; run: () => void } } | null>(null);
   const [hearts, setHearts] = useState<{ id: number; x: number; y: number; dx: number; delay: number }[]>([]);
   const [followId, setFollowId] = useState<string | null>(null);
@@ -1099,6 +1117,12 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       setTimeout(() => document.getElementById(`chatbox-${row.id}`)?.focus(), 250);
       return;
     }
+    if (t === "window") {
+      // Starts empty, showing templates to pick from.
+      addRow("window", { ...placeNear(640, 300), w: 640, title: "Window", blocks: [] });
+      setTool("select");
+      return;
+    }
     if (t === "media") return setDialog({ kind: "media" });
     if (t === "youtube") return setDialog({ kind: "media", url: "" });
     if (t === "voice") return setDialog({ kind: "voice" });
@@ -1388,10 +1412,24 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         break;
       }
       case "move": {
-        const dx = w.x - g.wx;
-        const dy = w.y - g.wy;
+        let dx = w.x - g.wx;
+        let dy = w.y - g.wy;
         if (!g.moved && Math.hypot(dx, dy) * cam.current.zoom < 3) break;
         g.moved = true;
+        // Snap to nearby items' edges and centres, or dock beside them. Hold Alt to place freely.
+        const box = unionBounds(g.originals);
+        if (box && !e.altKey && g.originals.length <= 40) {
+          const moving = new Set(g.originals.map((r) => r.id));
+          const others: ReturnType<typeof bounds>[] = [];
+          for (const r of rowsRef.current.values()) {
+            if (moving.has(r.id) || r.type === "stroke" || r.type === "place" || pageOf(r) !== page) continue;
+            others.push(bounds(r));
+          }
+          const snap = snapBox({ ...box, x: box.x + dx, y: box.y + dy }, others, 8 / cam.current.zoom);
+          dx += snap.sx;
+          dy += snap.sy;
+          setGuides(snap.guides);
+        } else setGuides([]);
         preview(g.originals.map((r) => ({ id: r.id, row: { ...r, data: { ...r.data, x: Math.round(r.data.x + dx), y: Math.round(r.data.y + dy) } } })));
         setActivity({ k: "move", items: g.originals.slice(0, 150).map((r) => [r.id, Math.round(r.data.x + dx), Math.round(r.data.y + dy)]) });
         break;
@@ -1469,6 +1507,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         break;
       }
       case "move":
+        setGuides([]);
         if (g.moved) {
           void send(
             g.originals.map((r) => ({ before: committedRef.current.get(r.id) ?? r, after: rowsRef.current.get(r.id) ?? r })),
@@ -1666,6 +1705,10 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       chatFor: (thread) => threads.get(thread) ?? NO_CHAT,
       sendChat: sendTo,
       stopEditing: () => setEditingId(null),
+      startEditing: (id) => {
+        setSelectedId(id);
+        setEditingId(id);
+      },
       sendYt,
       onYt,
       setWatching: setWatchingState,
@@ -1673,7 +1716,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       openCapsule: (id) => setDialog({ kind: "capsuleOpen", id, title: rowsRef.current.get(id)?.data.title || "Time capsule" }),
       addToCapsule: (id) => setDialog({ kind: "capsuleNote", id }),
     }),
-    [boardId, me, laneOpen, camera.zoom, watchers, serverNow, patch, finishText, reportTyping, threads, sendTo, sendYt, onYt, onListener, setEditingId],
+    [boardId, me, laneOpen, camera.zoom, watchers, serverNow, patch, finishText, reportTyping, threads, sendTo, sendYt, onYt, onListener, setEditingId, setSelectedId],
   );
 
   /* ---------- Others' live activity ---------- */
@@ -1786,6 +1829,42 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       return [{ before: committedRef.current.get(r.id) ?? r, after: { ...r, data: { ...r.data, ...data } } }];
     });
     void send(changes);
+  }
+
+  const alignOpen = alignFor === selectedIds.join();
+  /** Lines up the selected items, or spaces them evenly, moving each by whole units. */
+  function alignSelection(how: AlignKind) {
+    const items = selectedRows.map((r) => ({ r, b: bounds(r) }));
+    if (items.length < 2) return;
+    const box = unionBounds(selectedRows)!;
+    const target = new Map<string, { x: number; y: number }>();
+    for (const { r, b } of items) {
+      let { x, y } = b;
+      if (how === "left") x = box.x;
+      if (how === "center") x = box.x + box.w / 2 - b.w / 2;
+      if (how === "right") x = box.x + box.w - b.w;
+      if (how === "top") y = box.y;
+      if (how === "middle") y = box.y + box.h / 2 - b.h / 2;
+      if (how === "bottom") y = box.y + box.h - b.h;
+      target.set(r.id, { x, y });
+    }
+    if (how === "across" || how === "down") {
+      const across = how === "across";
+      const sorted = [...items].sort((p, q) => (across ? p.b.x - q.b.x : p.b.y - q.b.y));
+      const total = sorted.reduce((s, it) => s + (across ? it.b.w : it.b.h), 0);
+      // Even gaps between neighbours; if they overlap, give them a small gap instead.
+      const gap = Math.max(24, ((across ? box.w : box.h) - total) / (sorted.length - 1));
+      let at = across ? box.x : box.y;
+      for (const it of sorted) {
+        target.set(it.r.id, across ? { x: at, y: it.b.y } : { x: it.b.x, y: at });
+        at += (across ? it.b.w : it.b.h) + gap;
+      }
+    }
+    changeAll((r) => {
+      const b = bounds(r);
+      const t = target.get(r.id)!;
+      return { ...r, data: { ...r.data, x: Math.round(r.data.x + t.x - b.x), y: Math.round(r.data.y + t.y - b.y) } };
+    });
   }
 
   function changeAll(fn: (r: ElementRow) => ElementRow) {
@@ -1908,6 +1987,17 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
             </div>
           )}
           {draft && draft.type !== "stroke" && <ElementView row={draft} selected={false} editing={false} likes={0} />}
+          {guides.map((gd, i) => (
+            <div
+              key={i}
+              className="snap-guide"
+              style={
+                gd.axis === "x"
+                  ? { left: gd.at - 0.5 / camera.zoom, top: gd.from, width: 1 / camera.zoom, height: gd.to - gd.from }
+                  : { left: gd.from, top: gd.at - 0.5 / camera.zoom, width: gd.to - gd.from, height: 1 / camera.zoom }
+              }
+            />
+          ))}
           {marquee && (
             <div
               className="marquee"
@@ -1994,6 +2084,32 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
             <Icon name="heart" size={18} filled={iLike} />
           </button>
           {selectedRows.length > 1 && <span className="sel-count">{selectedRows.length} selected</span>}
+          {selectedRows.length > 1 && (
+            <div className="align-wrap">
+              <button
+                type="button"
+                className="icon-btn sm"
+                aria-label="Align"
+                title="Align and space out"
+                aria-expanded={alignOpen}
+                onClick={() => setAlignFor(alignOpen ? null : selectedIds.join())}
+              >
+                <Icon name="alignLeft" size={18} />
+              </button>
+              {alignOpen && (
+                <div className="align-pop surface" role="toolbar" aria-label="Align selection">
+                  {ALIGN_ACTIONS.filter((a) => !a.spread || selectedRows.length > 2).map((a, i, all) => (
+                    <Fragment key={a.id}>
+                      {i > 0 && all[i - 1].group !== a.group && <span className="align-sep" />}
+                      <button type="button" className="icon-btn sm" aria-label={a.label} title={a.label} onClick={() => alignSelection(a.id)}>
+                        <Icon name={a.icon} size={18} />
+                      </button>
+                    </Fragment>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           {selected && EDITABLE.includes(selected.type) && (
             <button
               type="button"

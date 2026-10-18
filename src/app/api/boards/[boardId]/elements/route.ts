@@ -6,7 +6,7 @@ type Ctx = { params: Promise<{ boardId: string }> };
 
 const TYPES: ElementType[] = [
   "stroke", "rect", "ellipse", "arrow", "text", "note", "image", "video",
-  "audio", "youtube", "embed", "link", "capsule", "place", "sticker", "chatbox", "sticky",
+  "audio", "youtube", "embed", "link", "capsule", "place", "sticker", "chatbox", "sticky", "window",
 ];
 const MAX_DATA = 400_000;
 const MAX_OPS = 200;
@@ -52,9 +52,23 @@ export const POST = handler<Ctx>(async (req, { params }) => {
        delete from elements where board_id = $1 and id in (select id from input where op = 'delete')
        returning id, type
      ),
-     -- A deleted chat box takes its conversation with it.
+     -- Chat blocks a window no longer has (or the whole window was deleted). Data-modifying CTEs
+     -- all see the table as it was, so this reads the window before this change.
+     gone_blocks as (
+       select b->>'id' as id
+       from elements e
+       join input i on i.id = e.id
+       cross join jsonb_array_elements(coalesce(e.data->'blocks', '[]'::jsonb)) b
+       where e.board_id = $1 and e.type = 'window' and b->>'kind' = 'chat'
+         and not exists (
+           select 1 from jsonb_array_elements(coalesce(i.data->'blocks', '[]'::jsonb)) nb where nb->>'id' = b->>'id'
+         )
+     ),
+     -- A deleted chat box or chat block takes its conversation with it.
      chat_gone as (
-       delete from messages where board_id = $1 and thread in (select id from del where type = 'chatbox')
+       delete from messages
+       where board_id = $1
+         and (thread in (select id from del where type = 'chatbox') or thread::text in (select id from gone_blocks))
      ),
      ev as (
        insert into element_events (board_id, element_id, op, type, data, z, author)

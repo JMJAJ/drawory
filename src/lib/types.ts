@@ -17,7 +17,8 @@ export type ElementType =
   | "place"
   | "sticker"
   | "chatbox"
-  | "sticky";
+  | "sticky"
+  | "window";
 
 export interface ElementData {
   x: number;
@@ -49,6 +50,29 @@ export interface ElementData {
   count?: number;
   name?: string;
   likes?: string[];
+  subtitle?: string;
+  blocks?: WinBlock[];
+}
+
+export type WinBlockKind = "ranking" | "list" | "poll" | "chat" | "countdown" | "text" | "link" | "image" | "divider";
+
+/** One block in a window. Width is in sixths of the window; the window grows to fit its blocks. */
+export interface WinBlock {
+  id: string;
+  kind: WinBlockKind;
+  title?: string;
+  span?: 2 | 3 | 4 | 6;
+  align?: "left" | "center" | "right";
+  valign?: "top" | "middle" | "bottom";
+  /** Ranking options, poll options and list items. */
+  items?: { id: string; text: string; done?: boolean; src?: string }[];
+  /** Who voted for what: option id -> user ids. */
+  votes?: Record<string, string[]>;
+  /** Countdown target (ISO time). */
+  at?: string;
+  text?: string;
+  url?: string;
+  src?: string;
 }
 
 /** A row of the `elements` live query. */
