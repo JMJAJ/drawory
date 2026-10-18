@@ -21,7 +21,11 @@ export async function requireSession(req: NextRequest) {
   }
 }
 
+/** View-only links use codes with this prefix. They can read a room but never change it. */
+export const VIEW_PREFIX = "view-";
+
 export function boardIdFrom(value: string) {
+  if (value.startsWith(VIEW_PREFIX)) throw new HttpError(403, "This is a view-only link");
   if (!BOARD_ID.test(value)) throw new HttpError(400, "Invalid board id");
   return value;
 }

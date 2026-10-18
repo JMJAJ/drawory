@@ -130,3 +130,7 @@ alter table messages add column if not exists thread uuid;
 
 -- Emoji reactions on chat messages: emoji -> user ids.
 alter table messages add column if not exists reactions jsonb not null default '{}'::jsonb;
+
+-- A second code that only lets people look (no drawing, no chat), and room settings.
+alter table boards add column if not exists view_code text unique;
+alter table boards add column if not exists settings jsonb not null default '{}'::jsonb;

@@ -43,6 +43,8 @@ import {
 import { ElementView, StrokeSvg, type RemoteMark } from "./ElementView";
 import { SearchPanel, type SearchHit } from "./SearchPanel";
 import { Minimap } from "./Minimap";
+import { deleteTemplate, saveTemplate, useTemplates } from "@/lib/client/templates";
+import { PhotoEditor } from "./PhotoEditor";
 import { blockFromElement, elementFromBlock, insertBlocks } from "./WindowView";
 import { RemoteCursor } from "./RemoteCursor";
 import { MemoryLane } from "./MemoryLane";
@@ -179,7 +181,7 @@ function relativeTime(date: Date, now: number) {
   return `${Math.round(s / 86400)} d ago`;
 }
 
-export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; onChangeMe: (me: Me) => void }) {
+export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: string; me: Me; onChangeMe: (me: Me) => void; viewOnly?: boolean }) {
   /* ---------- Live data ---------- */
   const sync = useBoardSync(boardId);
   const elData = sync.elements;
@@ -272,6 +274,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   >(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [stickersOpen, setStickersOpen] = useState(false);
+  const [photoEditId, setPhotoEditId] = useState<string | null>(null);
   // Lines shown while a dragged item snaps to others.
   const [guides, setGuides] = useState<SnapGuide[]>([]);
   // The align menu belongs to one selection; picking something else closes it.
@@ -339,7 +342,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   const loadBoard = useCallback(() => {
     api.board(boardId).then((b) => {
       setBoard(b);
-      rememberRoom(boardId, b.name);
+      if (!viewOnly) rememberRoom(boardId, b.name);
     }, () => {});
   }, [boardId]);
   useEffect(loadBoard, [loadBoard]);
@@ -499,7 +502,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   /* ---------- Writes ---------- */
   const send = useCallback(
     async (changes: Change[], record = true) => {
-      if (changes.length === 0) return;
+      if (changes.length === 0 || viewOnly) return;
       if (record) {
         undoStack.current.push(changes);
         if (undoStack.current.length > 100) undoStack.current.shift();
@@ -534,7 +537,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         });
       }
     },
-    [boardId, me.id, awaitTxId, showToast],
+    [boardId, me.id, awaitTxId, showToast, viewOnly],
   );
   const preview = useCallback(
     (list: { id: string; row: ElementRow | null }[]) => {
@@ -606,10 +609,14 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         .map((id) => rowsRef.current.get(id))
         .filter((r): r is ElementRow => !!r && !r.data.locked)
         .map((r) => ({ before: committedRef.current.get(r.id) ?? r, after: null }));
+      if (!changes.length) {
+        if (ids.length) showToast("Locked things can't be deleted. Unlock them first.");
+        return;
+      }
       void send(changes);
       setSelectedId(null);
     },
-    [send, setSelectedId],
+    [send, setSelectedId, showToast],
   );
 
   /* ---------- Presence ---------- */
@@ -636,7 +643,8 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     if (jump) setNow(Date.now() + offset);
   }, []);
   // The room's live relay: cursors and live activity reach others in milliseconds.
-  const sock = useRoomSocket(boardId, me.id, applyClock);
+  // View-only links don't join the live room (no cursor of their own); they still see every change.
+  const sock = useRoomSocket(boardId, me.id, applyClock, !viewOnly);
   const sockRef = useRef(sock);
   useEffect(() => {
     sockRef.current = sock;
@@ -645,6 +653,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
 
   const pushPresence = useCallback(
     (hidden = false, leaving = false) => {
+      if (viewOnly) return;
       const c = cam.current;
       const activity = hidden ? null : activityRef.current;
       const body = {
@@ -1374,7 +1383,8 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     if (pointers.current.size > 2) return;
 
     const w = toWorld(e.clientX, e.clientY);
-    const panning = laneOpen || tool === "hand" || spaceHeld || e.button === 1;
+    // View-only: dragging always moves around; buttons on cards (play, links) still work.
+    const panning = laneOpen || viewOnly || tool === "hand" || spaceHeld || e.button === 1;
     if (panning) {
       setFollowing(false);
       gesture.current = { kind: "pan", sx: e.clientX, sy: e.clientY, cam: { ...cam.current } };
@@ -1697,7 +1707,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   }
 
   function onDoubleClick(e: React.MouseEvent) {
-    if (tool !== "select") return;
+    if (tool !== "select" || viewOnly) return;
     const id = (e.target as HTMLElement).closest("[data-el]")?.getAttribute("data-el");
     const row = id ? rowsRef.current.get(id) : null;
     if (row && EDITABLE.includes(row.type) && !row.data.locked) setEditingId(row.id);
@@ -1794,7 +1804,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       } else if (e.key === " " && !e.repeat) {
         e.preventDefault();
         setSpaceHeld(true);
-      } else if (!mod && !e.altKey && KEY_TOOLS[e.key.toLowerCase()] && !laneOpen) {
+      } else if (!mod && !e.altKey && KEY_TOOLS[e.key.toLowerCase()] && !laneOpen && !viewOnly) {
         chooseTool(KEY_TOOLS[e.key.toLowerCase()] as Tool);
       }
     };
@@ -1812,7 +1822,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     };
     const onCut = (e: ClipboardEvent) => onCopy(e, true);
     const onPaste = (e: ClipboardEvent) => {
-      if (isEditable(e.target) || dialog || laneOpen) return;
+      if (isEditable(e.target) || dialog || laneOpen || viewOnly) return;
       const clip = e.clipboardData?.getData("text/plain") ?? "";
       if (clip.startsWith(CLIP_PREFIX)) {
         e.preventDefault();
@@ -1910,15 +1920,15 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     [send, dropPreview, setEditingId, endActivity],
   );
   // The context stays stable; this always calls the newest version.
-  const moveBlockOutRef = useRef<{ out: typeof moveBlockOut; to: typeof moveBlockTo } | null>(null);
+  const moveBlockOutRef = useRef<{ out: typeof moveBlockOut; to: typeof moveBlockTo; play: typeof playSong } | null>(null);
   useEffect(() => {
-    moveBlockOutRef.current = { out: moveBlockOut, to: moveBlockTo };
+    moveBlockOutRef.current = { out: moveBlockOut, to: moveBlockTo, play: playSong };
   });
   const ctx: BoardCtx = useMemo(
     () => ({
       boardId,
       me,
-      readOnly: laneOpen,
+      readOnly: laneOpen || viewOnly,
       zoom: camera.zoom,
       watchers,
       serverNow,
@@ -1936,6 +1946,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       stopEditing: () => setEditingId(null),
       moveBlockOut: (winId, blockId, at) => void moveBlockOutRef.current?.out(winId, blockId, at),
       moveBlockTo: (from, blockId, to, near) => moveBlockOutRef.current?.to(from, blockId, to, near),
+      playSong: (win, blockId, videoId, title) => moveBlockOutRef.current?.play(win, blockId, videoId, title),
       startEditing: (id) => {
         setSelectedId(id);
         setEditingId(id);
@@ -1944,6 +1955,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       onYt,
       setWatching: setWatchingState,
       onListener,
+      editPhoto: (id) => setPhotoEditId(id),
       openCapsule: (id) => setDialog({ kind: "capsuleOpen", id, title: rowsRef.current.get(id)?.data.title || "Time capsule" }),
       addToCapsule: (id) => setDialog({ kind: "capsuleNote", id }),
     }),
@@ -2065,6 +2077,104 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   const alignOpen = alignFor === selectedIds.join();
   const isGroup = selectedRows.length > 1 && selectedRows.every((r) => r.data.group && r.data.group === selectedRows[0].data.group);
   const allLocked = selectedRows.length > 0 && selectedRows.every((r) => r.data.locked);
+  const pageTemplates = useTemplates("page");
+  const [pageTplName, setPageTplName] = useState<string | null>(null);
+  function savePageTemplate() {
+    const list = rows.filter((r) => r.type !== "capsule");
+    const box = unionBounds(list);
+    if (!box) return showToast("This page is empty");
+    const name = (pageTplName ?? "").trim() || pages.find((p) => p.id === page)?.name || "My page";
+    try {
+      saveTemplate({
+        kind: "page",
+        name,
+        items: list.map((r) => ({
+          type: r.type,
+          data: { ...r.data, x: r.data.x - box.x, y: r.data.y - box.y, page: undefined, likes: undefined, locked: undefined },
+        })),
+      });
+      showToast(`Saved “${name}” as a template`);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Couldn't save it");
+    }
+    setPageTplName(null);
+  }
+  function applyPageTemplate(items: { type: ElementType; data: ElementData }[]) {
+    const fake = items.map((x) => makeRow(x.type, x.data, 0, me.id));
+    const box = unionBounds(fake);
+    if (!box) return;
+    const c = centerWorld();
+    const copies = cloneRows(fake, c.x - (box.x + box.w / 2), c.y - (box.y + box.h / 2));
+    void send(copies.map((r) => ({ before: null, after: r })));
+    setTool("select");
+    setSelectedIds(copies.map((r) => r.id));
+    setMenuOpen(false);
+  }
+  const isCreator = !!board?.created_by && board.created_by === me.id && !viewOnly;
+  const canClear = !viewOnly && (!board?.settings?.creatorOnlyClear || isCreator);
+
+  async function copyViewLink() {
+    try {
+      const { code } = await api.viewLink(boardId);
+      if (!code) return;
+      setBoard((b) => (b ? { ...b, view_code: code } : b));
+      const link = `${window.location.origin}/v/${code}`;
+      await navigator.clipboard.writeText(link).catch(() => {});
+      showToast("View-only link copied. People with it can look, but not change anything.");
+    } catch {
+      showToast("Couldn't make the link. Try again.");
+    }
+  }
+  async function turnOffViewLink() {
+    try {
+      await api.viewLink(boardId, { off: true });
+      setBoard((b) => (b ? { ...b, view_code: null } : b));
+      showToast("View-only link turned off");
+    } catch {
+      showToast("Couldn't turn it off. Try again.");
+    }
+  }
+  /** Saves the page (or the selection) as a PNG. Videos and web embeds show as blank cards. */
+  async function exportPng(onlySelection: boolean) {
+    const list = onlySelection && selectedRows.length ? selectedRows : rows;
+    const b = unionBounds(list);
+    const world = rootRef.current?.querySelector<HTMLElement>(".world");
+    if (!b || !world) return showToast("Nothing to save yet");
+    const keep = selectedIdsRef.current;
+    setSelectedIds([]);
+    setEditingId(null);
+    showToast("Making the picture…");
+    await new Promise((r) => setTimeout(r, 80));
+    try {
+      const { toPng } = await import("html-to-image");
+      const pad = 48;
+      const w = Math.ceil(b.w + pad * 2), h = Math.ceil(b.h + pad * 2);
+      const ids = new Set(list.map((r) => r.id));
+      const skip = ["resize-handle", "cursor", "remote-tag", "marquee", "snap-guide", "lock-chip", "like-chip", "sel-box"];
+      const url = await toPng(world, {
+        width: w,
+        height: h,
+        pixelRatio: Math.max(0.5, Math.min(2, 6000 / Math.max(w, h))),
+        backgroundColor: getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() || "#ffffff",
+        style: { transform: `translate(${pad - b.x}px, ${pad - b.y}px)`, transformOrigin: "0 0" },
+        filter: (n) => {
+          if (!(n instanceof HTMLElement)) return true;
+          if (n.dataset.el) return ids.has(n.dataset.el);
+          return n.tagName !== "IFRAME" && !skip.some((c) => n.classList.contains(c));
+        },
+      });
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${(board?.name || "drawory").replace(/[\\/:*?"<>|]+/g, "")} - ${pages.find((p) => p.id === page)?.name ?? "page"}.png`;
+      a.click();
+      showToast("Picture saved");
+    } catch {
+      showToast("Couldn't make the picture. Try again.");
+    } finally {
+      setSelectedIds(keep);
+    }
+  }
+
   /** The ids plus everything grouped with them. */
   function withGroups(ids: string[]) {
     const groups = new Set(ids.map((id) => rowsRef.current.get(id)?.data.group).filter(Boolean));
@@ -2154,6 +2264,20 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     ]);
     setSelectedId(win.id);
     return true;
+  }
+  function playSong(winId: string, blockId: string, videoId: string, title: string) {
+    const url = `https://youtu.be/${videoId}`;
+    const existing = [...rowsRef.current.values()].find((r) => r.type === "youtube" && r.data.queueOf === blockId);
+    if (existing) {
+      patch(existing.id, { videoId, title, url });
+      jumpToElement(existing.id);
+      return;
+    }
+    const win = rowsRef.current.get(winId);
+    if (!win) return;
+    const wb = bounds(win);
+    const row = addRow("youtube", { x: Math.round(wb.x + wb.w + 40), y: Math.round(wb.y), w: 480, videoId, title, url, queueOf: blockId }, false);
+    jumpToElement(row.id);
   }
   function moveBlockTo(fromId: string, blockId: string, toId: string, nearBlock: string | null) {
     const from = rowsRef.current.get(fromId);
@@ -2428,7 +2552,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         ))}
       </div>
 
-      {selectedRows.length > 0 && selBox && !marquee && tool === "select" && !editingId && (
+      {selectedRows.length > 0 && selBox && !marquee && tool === "select" && !editingId && !viewOnly && (
         <div
           className="sel-toolbar surface"
           style={{ left: (selBox.x + selBox.w / 2) * camera.zoom + camera.x, top: Math.max(80, selBox.y * camera.zoom + camera.y) }}
@@ -2466,6 +2590,14 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
             onClick={toggleLock}
           >
             <Icon name={allLocked ? "lock" : "unlock"} size={18} />
+          </button>
+          {selected?.type === "image" && !selected.data.locked && (
+            <button type="button" className="icon-btn sm" aria-label="Crop and rotate" title="Crop and rotate" onClick={() => setPhotoEditId(selected.id)}>
+              <Icon name="crop" size={18} />
+            </button>
+          )}
+          <button type="button" className="icon-btn sm" aria-label="Save as a picture" title="Save as a picture" onClick={() => void exportPng(true)}>
+            <Icon name="download" size={18} />
           </button>
           <button type="button" className="icon-btn sm" aria-label="Duplicate" title="Duplicate (Ctrl+D)" onClick={duplicateSelection}>
             <Icon name="copy" size={18} />
@@ -2561,12 +2693,20 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
                 onRename={(id, name) => savePages(pages.map((p) => (p.id === id ? { ...p, name } : p)))}
                 onDelete={deletePage}
                 onClear={clearPage}
+                canEdit={!viewOnly}
+                canClear={canClear}
               />
-              <button type="button" className="pill code-chip" onClick={copyInvite} title="Copy the invite link" aria-label={`Room code ${displayCode(boardId)}. Copy the invite link`}>
-                <span className="code-label">Code</span>
-                <span className="mono">{displayCode(boardId)}</span>
-                <Icon name="link" size={16} />
-              </button>
+              {viewOnly ? (
+                <span className="pill code-chip view-chip" title="You can look around, but not change anything">
+                  <Icon name="eye" size={16} /> View only
+                </span>
+              ) : (
+                <button type="button" className="pill code-chip" onClick={copyInvite} title="Copy the invite link" aria-label={`Room code ${displayCode(boardId)}. Copy the invite link`}>
+                  <span className="code-label">Code</span>
+                  <span className="mono">{displayCode(boardId)}</span>
+                  <Icon name="link" size={16} />
+                </button>
+              )}
               <nav className="pill places" aria-label="Places">
                 <button type="button" className="place-btn" aria-current={!myPlace} onClick={fitAll}>
                   All
@@ -2685,19 +2825,88 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
                   defaultValue={board?.name}
                   key={board?.name}
                   maxLength={80}
+                  disabled={viewOnly}
                   onBlur={(e) => {
                     const name = e.target.value.trim();
                     if (name && name !== board?.name) api.updateBoard(boardId, { name, from: me.id }).then(setBoard, () => showToast("Couldn't rename"));
                   }}
                 />
               </div>
-              <div>
-                <span className="field-label">Invite code</span>
-                <button type="button" className="btn code-big" onClick={copyInvite}>
-                  <span className="mono">{displayCode(boardId)}</span>
-                  <span className="muted">Copy link</span>
-                </button>
-              </div>
+              {!viewOnly && (
+                <div>
+                  <span className="field-label">Invite code</span>
+                  <button type="button" className="btn code-big" onClick={copyInvite}>
+                    <span className="mono">{displayCode(boardId)}</span>
+                    <span className="muted">Copy link</span>
+                  </button>
+                </div>
+              )}
+              {!viewOnly && (
+                <div className="menu-actions">
+                  <button type="button" className="btn" onClick={copyViewLink}>
+                    <Icon name="eye" size={18} /> {board?.view_code ? "Copy view-only link" : "Make a view-only link"}
+                  </button>
+                  {board?.view_code && (
+                    <button type="button" className="btn btn-ghost" onClick={turnOffViewLink}>
+                      Turn off view-only link
+                    </button>
+                  )}
+                </div>
+              )}
+              <button type="button" className="btn" onClick={() => void exportPng(false)}>
+                <Icon name="download" size={18} /> Save this page as a picture
+              </button>
+              {!viewOnly && (
+                <div className="menu-templates">
+                  <span className="field-label">Page templates</span>
+                  {pageTplName === null ? (
+                    <button type="button" className="btn" onClick={() => setPageTplName(pages.find((p) => p.id === page)?.name ?? "")} disabled={!rows.length}>
+                      <Icon name="plus" size={18} /> Save this page as a template
+                    </button>
+                  ) : (
+                    <form
+                      className="win-name-tpl"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        savePageTemplate();
+                      }}
+                    >
+                      <input autoFocus className="input" aria-label="Template name" value={pageTplName} maxLength={40} onChange={(e) => setPageTplName(e.target.value)} />
+                      <button type="submit" className="btn btn-primary">
+                        Save
+                      </button>
+                    </form>
+                  )}
+                  {pageTemplates.map((t) => (
+                    <div key={t.id} className="menu-template">
+                      <button type="button" className="btn btn-ghost" title="Add it to this page" onClick={() => applyPageTemplate(t.items ?? [])}>
+                        <Icon name="window" size={16} /> {t.name}
+                        <span className="muted">{t.items?.length ?? 0} things</span>
+                      </button>
+                      <button type="button" className="icon-btn sm" aria-label={`Delete the template ${t.name}`} onClick={() => deleteTemplate(t.id)}>
+                        <Icon name="trash" size={15} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {isCreator && (
+                <label className="toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={!!board?.settings?.creatorOnlyClear}
+                    onChange={(e) =>
+                      api
+                        .updateBoard(boardId, { settings: { creatorOnlyClear: e.target.checked }, from: me.id })
+                        .then(setBoard, (err) => showToast(err instanceof Error ? err.message : "Couldn't save that"))
+                    }
+                  />
+                  <span>
+                    <strong>Only I can clear or delete pages</strong>
+                    <span className="muted">You made this room. Others can still draw and add pages.</span>
+                  </span>
+                </label>
+              )}
               <Link className="btn" href="/" style={{ justifyContent: "flex-start" }}>
                 <Icon name="back" size={18} /> All rooms
               </Link>
@@ -2725,11 +2934,21 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
                 {me.name} · change
               </button>
               <p className="muted" style={{ margin: 0, fontSize: 12 }}>
-                Shortcuts: V select · H pan · P draw · E erase · T text · N list · Space+drag pan · Ctrl+Z undo
+                Shortcuts: V select · H pan · P draw · E erase · T text · N list · W window · Space+drag pan · Ctrl+Z undo · Ctrl+F search · Ctrl+D duplicate · Ctrl+G group · Ctrl+Shift+L lock · Ctrl+C/V copy and paste · arrows nudge
               </p>
             </div>
           )}
 
+          {photoEditId && rowsById.get(photoEditId) && (
+            <PhotoEditor
+              row={rowsById.get(photoEditId)!}
+              onClose={() => setPhotoEditId(null)}
+              onApply={(data) => {
+                patch(photoEditId, data);
+                setPhotoEditId(null);
+              }}
+            />
+          )}
           {searchOpen && (
             <div className="hud search-hud">
               <SearchPanel rows={allRows} threads={threads} homes={threadHomes} pages={pages} onJump={jumpToHit} onClose={() => setSearchOpen(false)} />
@@ -2778,7 +2997,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
               </div>
             </div>
 
-            <div className="dock-wrap">
+            <div className="dock-wrap" style={viewOnly ? { display: "none" } : undefined}>
               {stickersOpen && (
                 <StickerTray
                   onClose={() => setStickersOpen(false)}

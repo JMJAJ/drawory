@@ -14,10 +14,14 @@ interface Props {
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
   onClear: () => void;
+  /** Add and rename pages. */
+  canEdit?: boolean;
+  /** Clear and delete pages. */
+  canClear?: boolean;
 }
 
 /** The room's pages: a switcher with add/rename/delete, and a one-click "clear this page". */
-export function PagesBar({ pages, current, count, onSwitch, onAdd, onRename, onDelete, onClear }: Props) {
+export function PagesBar({ pages, current, count, onSwitch, onAdd, onRename, onDelete, onClear, canEdit = true, canClear = true }: Props) {
   const [open, setOpen] = useState(false);
   const [confirm, setConfirm] = useState<null | "clear" | { delete: string }>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -66,6 +70,7 @@ export function PagesBar({ pages, current, count, onSwitch, onAdd, onRename, onD
         {pages.length > 1 && <span className="page-count">{pages.findIndex((p) => p.id === currentPage.id) + 1}/{pages.length}</span>}
         <Icon name="back" size={14} style={{ transform: "rotate(-90deg)" }} />
       </button>
+      {canClear && (
       <button
         type="button"
         className="icon-btn sm"
@@ -79,6 +84,7 @@ export function PagesBar({ pages, current, count, onSwitch, onAdd, onRename, onD
       >
         <Icon name="eraser" size={18} />
       </button>
+      )}
 
       {confirm === "clear" && (
         <div className="pages-pop surface" role="alertdialog" aria-label="Clear page">
@@ -152,9 +158,12 @@ export function PagesBar({ pages, current, count, onSwitch, onAdd, onRename, onD
                   </button>
                 ) : (
                   <>
+                    {canEdit && (
                     <button type="button" className="icon-btn sm" aria-label={`Rename ${p.name}`} title="Rename" onClick={() => setRenaming(p.id)}>
                       <Icon name="pen" size={15} />
                     </button>
+                    )}
+                    {canClear && (
                     <button
                       type="button"
                       className="icon-btn sm"
@@ -165,11 +174,13 @@ export function PagesBar({ pages, current, count, onSwitch, onAdd, onRename, onD
                     >
                       <Icon name="trash" size={15} />
                     </button>
+                    )}
                   </>
                 )}
               </li>
             ))}
           </ul>
+          {canEdit && (
           <button
             type="button"
             className="btn page-add"
@@ -180,6 +191,7 @@ export function PagesBar({ pages, current, count, onSwitch, onAdd, onRename, onD
           >
             <Icon name="plus" size={16} /> New page
           </button>
+          )}
         </div>
       )}
     </div>

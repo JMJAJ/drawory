@@ -11,10 +11,10 @@ import { SetupDialog } from "./Dialogs";
 
 type RoomState = "checking" | "ok" | "missing" | "error";
 
-export function BoardApp() {
+export function BoardApp({ viewOnly = false }: { viewOnly?: boolean }) {
   const params = useParams<{ boardId: string }>();
   const boardId = params.boardId ?? "";
-  const validId = /^[a-z0-9-]{1,40}$/.test(boardId);
+  const validId = viewOnly ? /^view-[a-z0-9]{10}$/.test(boardId) : /^[a-z0-9-]{1,40}$/.test(boardId);
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   const [room, setRoom] = useState<RoomState>("checking");
 
@@ -31,7 +31,7 @@ export function BoardApp() {
       (e) => {
         if (cancelled) return;
         if (e instanceof ApiError && e.status === 404) {
-          forgetRoom(boardId);
+          if (!viewOnly) forgetRoom(boardId);
           setRoom("missing");
         } else setRoom("error");
       },
@@ -53,7 +53,9 @@ export function BoardApp() {
           <p className="muted">
             {room === "error"
               ? "Check your connection and try again."
-              : `There's no room with the code ${validId ? displayCode(boardId) : "you used"}. Check the code, or make a new room.`}
+              : viewOnly
+                ? "This view-only link doesn't work anymore. Ask for a new one."
+                : `There's no room with the code ${validId ? displayCode(boardId) : "you used"}. Check the code, or make a new room.`}
           </p>
           <Link className="btn btn-primary" href="/">
             Go to rooms
@@ -63,6 +65,10 @@ export function BoardApp() {
     );
   }
   if (me === undefined || room === "checking") return <div className="loading-screen">Opening the room…</div>;
+  if (viewOnly) {
+    // Viewers don't need a name: they can't draw or chat.
+    return <Board boardId={boardId} me={me ?? { id: `viewer-${boardId}`, name: "Viewer", color: "#8A8A96" }} viewOnly onChangeMe={() => {}} />;
+  }
   if (me === null) {
     return (
       <SetupDialog

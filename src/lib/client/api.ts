@@ -39,6 +39,9 @@ export const api = {
   board(boardId: string) {
     return request<BoardMeta>(base(boardId));
   },
+  viewLink(boardId: string, opts: { reset?: boolean; off?: boolean } = {}) {
+    return request<{ code: string | null }>(`${base(boardId)}/view-link`, json(opts));
+  },
   createRoom(name: string, by?: string) {
     return request<{ id: string; name: string }>("/api/rooms", json({ name, by }));
   },

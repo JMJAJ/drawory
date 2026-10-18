@@ -1277,7 +1277,8 @@ textarea.sticky-text { border: 0; outline: none; resize: none; background: trans
 .search-page { font-size: 11px; font-weight: 700; color: var(--muted); background: var(--soft); padding: 3px 8px; border-radius: 999px; flex: none; }
 
 /* ---------- Minimap ---------- */
-.minimap-hud { left: 16px; bottom: 140px; }
+.minimap-hud { right: 16px; bottom: 150px; }
+@media (max-height: 620px) { .minimap-hud { display: none; } }
 .minimap { position: relative; padding: 6px; border-radius: 14px; box-shadow: 0 8px 24px var(--shadow); }
 .minimap svg { display: block; cursor: pointer; touch-action: none; border-radius: 8px; background: var(--bg); }
 .minimap-hide {
@@ -1286,3 +1287,82 @@ textarea.sticky-text { border: 0; outline: none; resize: none; background: trans
 }
 .minimap:hover .minimap-hide { display: inline-flex; }
 @media (max-width: 720px) { .minimap-hud { display: none; } }
+
+/* ---------- View only, menu actions ---------- */
+.view-chip { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; color: var(--muted); }
+.menu-actions { display: flex; flex-direction: column; gap: 6px; }
+.menu-panel .btn { justify-content: flex-start; gap: 8px; }
+
+/* ---------- Window blocks: dates, bills, kanban, music ---------- */
+.win-dates, .win-bills, .win-queue { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left; }
+.win-dates li { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 10px; }
+.win-dates li.best { background: color-mix(in srgb, var(--green) 14%, transparent); }
+.win-date-text { flex: 1; min-width: 0; }
+.win-date-n { min-width: 24px; height: 24px; border-radius: 999px; background: var(--soft); color: var(--muted); font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+.win-dates li.best .win-date-n { background: var(--green); color: #fff; }
+.win-free { display: inline-flex; align-items: center; gap: 4px; height: 30px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); font: inherit; font-size: 12px; font-weight: 700; flex: none; }
+.win-free[aria-pressed="true"] { background: var(--green); border-color: var(--green); color: #fff; }
+.win-inline-form { display: flex; gap: 8px; width: 100%; }
+.win-inline-form .btn { flex: none; height: 38px; }
+.win-bills li, .win-queue li { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.win-bill-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.win-bill-text strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.win-bill-amt { font-weight: 700; font-variant-numeric: tabular-nums; }
+.win-settle { width: 100%; padding: 10px 12px; border-radius: 12px; background: var(--soft); display: flex; flex-direction: column; gap: 4px; text-align: left; }
+.win-owe span { float: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+.win-square { color: var(--green); font-weight: 700; }
+.win-currency { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.win-currency .win-input { width: 70px; }
+.win-bill-form { width: 100%; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--border); padding-top: 10px; }
+.win-bill-row { display: flex; align-items: center; gap: 8px; }
+.win-amt { width: 100px; flex: none; }
+.win-split { display: flex; flex-wrap: wrap; gap: 6px; }
+.win-split-chip { height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--border-strong); background: transparent; color: var(--muted); font: inherit; font-size: 12px; font-weight: 600; }
+.win-split-chip[aria-pressed="true"] { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+.win-kanban { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; width: 100%; text-align: left; }
+@container (max-width: 460px) { .win-kanban { grid-template-columns: 1fr; } }
+.win-col { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 12px; background: var(--soft); min-height: 90px; }
+.win-col-head { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; display: flex; justify-content: space-between; padding: 2px 4px; }
+.win-col.col-done .win-card-text { color: var(--muted); text-decoration: line-through; }
+.win-card { display: flex; align-items: center; gap: 4px; padding: 8px 6px 8px 10px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border); font-size: 13px; }
+.win-card-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.win-card-moves { display: flex; flex: none; }
+.win-card-moves .win-x { width: 24px; height: 24px; }
+.win-col .win-additem { border-top: 0; padding-top: 2px; }
+.win-play-next { align-self: flex-start; gap: 6px; }
+
+/* ---------- Photos: crop and rotate ---------- */
+.photo-area { position: relative; width: 100%; border-radius: 11px; overflow: hidden; background: var(--photo); }
+.photo-frame { position: absolute; inset: 0; overflow: hidden; }
+.photo-turn { position: absolute; left: 50%; top: 50%; overflow: hidden; }
+.photo-turn img { position: absolute; max-width: none; display: block; border-radius: 0 !important; pointer-events: none; }
+.photo-editor { width: min(920px, 100%) !important; }
+.photo-edit-main { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+.photo-crop { position: relative; touch-action: none; user-select: none; flex: none; }
+.photo-crop > img { width: 100%; height: 100%; display: block; border-radius: 8px; pointer-events: none; }
+.crop-rect { position: absolute; cursor: move; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5); outline: 2px solid #fff; }
+.photo-crop { overflow: hidden; border-radius: 8px; }
+.crop-handle { position: absolute; width: 16px; height: 16px; background: #fff; border-radius: 4px; border: 1px solid rgba(0, 0, 0, 0.3); }
+.h-tl { left: -8px; top: -8px; cursor: nwse-resize; } .h-br { right: -8px; bottom: -8px; cursor: nwse-resize; }
+.h-tr { right: -8px; top: -8px; cursor: nesw-resize; } .h-bl { left: -8px; bottom: -8px; cursor: nesw-resize; }
+.h-t { left: calc(50% - 8px); top: -8px; cursor: ns-resize; } .h-b { left: calc(50% - 8px); bottom: -8px; cursor: ns-resize; }
+.h-l { top: calc(50% - 8px); left: -8px; cursor: ew-resize; } .h-r { top: calc(50% - 8px); right: -8px; cursor: ew-resize; }
+.photo-edit-side { display: flex; flex-direction: column; gap: 10px; min-width: 160px; }
+.photo-preview { position: relative; border-radius: 10px; overflow: hidden; background: var(--photo); }
+.photo-edit-buttons { display: flex; flex-direction: column; gap: 6px; }
+.photo-edit-buttons .btn { justify-content: flex-start; gap: 8px; }
+
+/* ---------- Saved templates ---------- */
+.win-save-tpl { gap: 6px; }
+.win-name-tpl { display: flex; gap: 6px; align-items: center; flex: 1; min-width: 200px; }
+.win-name-tpl .win-input, .win-name-tpl .input { flex: 1; height: 34px; }
+.win-name-tpl .btn { height: 34px; flex: none; }
+.win-template.mine { padding: 0; align-items: center; gap: 0; }
+.win-template-use { flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 12px; padding: 14px; border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; }
+.win-template-use > svg { color: var(--partner); flex: none; margin-top: 1px; }
+.win-template-use > span { display: flex; flex-direction: column; gap: 2px; font-size: 14px; min-width: 0; }
+.win-template.mine .win-x { margin-right: 8px; }
+.menu-templates { display: flex; flex-direction: column; gap: 6px; }
+.menu-template { display: flex; align-items: center; gap: 4px; }
+.menu-template .btn { flex: 1; min-width: 0; }
+.menu-template .btn .muted { margin-left: auto; font-size: 12px; }

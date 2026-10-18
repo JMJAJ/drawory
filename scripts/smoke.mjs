@@ -213,6 +213,44 @@ check("Simultaneous votes and additions all count", voted);
 const bad = await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [{ op: "edit", id: voteWin, edit: { k: "vote", block: "x", option: "o1" } }] }));
 check("Rejects a malformed edit", bad.status === 400, `status ${bad.status}`);
 await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [{ op: "delete", id: voteWin }] }));
+// 10f. A chat block dragged from one window to another keeps its messages
+const winA = crypto.randomUUID(), winB = crypto.randomUUID(), hop = crypto.randomUUID();
+await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [
+  { op: "upsert", id: winA, type: "window", z: 11, data: { x: 0, y: 0, w: 640, blocks: [{ id: hop, kind: "chat" }] } },
+  { op: "upsert", id: winB, type: "window", z: 12, data: { x: 700, y: 0, w: 640, blocks: [] } },
+] }));
+await call(`/api/boards/${BOARD}/messages`, json({ user_id: "smoke-user", name: "Smoke", color: "#2F6BD0", body: "hopping", thread: hop }));
+check("Hopping message streams", await waitFor(() => (chSub.getSnapshot().data ?? []).some((m) => m.thread === hop)));
+await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [
+  { op: "upsert", id: winA, type: "window", z: 11, data: { x: 0, y: 0, w: 640, blocks: [] } },
+  { op: "upsert", id: winB, type: "window", z: 12, data: { x: 700, y: 0, w: 640, blocks: [{ id: hop, kind: "chat" }] } },
+] }));
+await new Promise((r) => setTimeout(r, 1500));
+check("Chat block moved between windows keeps its messages", (chSub.getSnapshot().data ?? []).some((m) => m.thread === hop));
+
+// 10g. Reactions: several at once all count, and toggle off
+const hopMsg = (chSub.getSnapshot().data ?? []).find((m) => m.thread === hop);
+await Promise.all(["a", "b", "c"].map((u) => call(`/api/boards/${BOARD}/messages/react`, json({ id: hopMsg.id, emoji: "❤️", user_id: u }))));
+check("Simultaneous reactions all count", await waitFor(() => (chSub.getSnapshot().data ?? []).find((m) => m.id === hopMsg.id)?.reactions?.["❤️"]?.length === 3));
+await call(`/api/boards/${BOARD}/messages/react`, json({ id: hopMsg.id, emoji: "❤️", user_id: "a" }));
+check("Reacting again takes it back", await waitFor(() => (chSub.getSnapshot().data ?? []).find((m) => m.id === hopMsg.id)?.reactions?.["❤️"]?.length === 2));
+const badEmoji = await call(`/api/boards/${BOARD}/messages/react`, json({ id: hopMsg.id, emoji: "💩", user_id: "a" }));
+check("Only the offered reactions are allowed", badEmoji.status === 400);
+await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [{ op: "delete", id: winA }, { op: "delete", id: winB }] }));
+
+// 10h. View-only links can read but not write, and don't reveal the room code
+const vl = await (await call(`/api/boards/${BOARD}/view-link`, json({}))).json();
+check("Makes a view-only link", /^view-[a-z0-9]{10}$/.test(vl.code ?? ""), vl.code);
+const vBoard = await (await call(`/api/boards/${vl.code}`)).json();
+check("View-only link reads the room without its code", vBoard.viewOnly === true && vBoard.id === vl.code && !JSON.stringify(vBoard).includes(BOARD));
+const vLive = await call(`/api/boards/${vl.code}/live`, json({ query: "elements" }));
+check("View-only link can watch the board live", vLive.status === 200);
+const vWrite = await call(`/api/boards/${vl.code}/elements`, json({ author: "x", ops: [{ op: "delete", id: crypto.randomUUID() }] }));
+check("View-only link can't change anything", vWrite.status === 403, `status ${vWrite.status}`);
+const vChat = await call(`/api/boards/${vl.code}/messages`, json({ user_id: "x", body: "hi" }));
+check("View-only link can't chat", vChat.status === 403, `status ${vChat.status}`);
+await call(`/api/boards/${BOARD}/view-link`, json({ off: true }));
+check("Turned-off view-only link stops working", (await call(`/api/boards/${vl.code}`)).status === 404);
 check("Room chat messages are untouched", (chSub.getSnapshot().data ?? []).some((m) => m.body === "hello room"));
 
 // 11. Pages

@@ -1,5 +1,5 @@
-import { requireBoard, pool } from "@/lib/server/db";
-import { boardIdFrom, handler, HttpError } from "@/lib/server/http";
+import { pool, readableBoard } from "@/lib/server/db";
+import { handler, HttpError } from "@/lib/server/http";
 import { BOARD_QUERIES, ELEMENTS_VERSION, LIVE_QUERY_NAMES } from "@/lib/server/queries";
 import type { LiveQueryName } from "@/lib/types";
 
@@ -11,10 +11,9 @@ type Ctx = { params: Promise<{ boardId: string }> };
  * Elements answer `unchanged` when `v` matches, so idle boards cost almost nothing.
  */
 export const GET = handler<Ctx>(async (req, { params }) => {
-  const boardId = boardIdFrom((await params).boardId);
+  const boardId = await readableBoard((await params).boardId);
   const name = req.nextUrl.searchParams.get("q") as LiveQueryName;
   if (!LIVE_QUERY_NAMES.includes(name)) throw new HttpError(400, "Unknown query");
-  await requireBoard(boardId);
   const headers = { "Cache-Control": "no-store" };
   const now = Date.now();
 

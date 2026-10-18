@@ -46,12 +46,16 @@ export interface BoardCtx {
   moveBlockOut(windowId: string, blockId: string, at?: { x: number; y: number }): void;
   /** Moves a block from one window into another (next to a block there, or to its end). */
   moveBlockTo(fromWindow: string, blockId: string, toWindow: string, nearBlock: string | null): void;
+  /** Plays a song from a window's music queue in a Watch together card beside the window. */
+  playSong(windowId: string, blockId: string, videoId: string, title: string): void;
   sendYt(elementId: string, cmd: Omit<YtCommand, "sentAt">): void;
   onYt(elementId: string, handler: (cmd: YtCommand) => void): () => void;
   setWatching(elementId: string | null): void;
   /** Where I am on the board (for proximity audio). Calls back now and whenever it changes. */
   onListener(cb: (at: Listener, enabled: boolean) => void): () => void;
   openCapsule(elementId: string): void;
+  /** Opens crop and rotate for a photo. */
+  editPhoto(elementId: string): void;
   addToCapsule(elementId: string): void;
 }
 

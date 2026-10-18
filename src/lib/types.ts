@@ -54,6 +54,11 @@ export interface ElementData {
   blocks?: WinBlock[];
   /** Items with the same group id are picked and moved together. */
   group?: string;
+  /** Photos: the part shown (fractions of the original) and quarter turns. */
+  crop?: { x: number; y: number; w: number; h: number };
+  rotate?: number;
+  /** A YouTube card playing a window's music queue (the block id). */
+  queueOf?: string;
   /** Locked items can't be moved, resized, erased, edited or deleted until unlocked. */
   locked?: boolean;
 }
@@ -74,7 +79,9 @@ export interface WinItem {
   url?: string;
 }
 
-export type WinBlockKind = "ranking" | "list" | "poll" | "chat" | "countdown" | "text" | "link" | "image" | "divider" | "slot";
+export type WinBlockKind =
+  | "ranking" | "list" | "poll" | "chat" | "countdown" | "text" | "link" | "image" | "divider" | "slot"
+  | "dates" | "bills" | "kanban" | "music";
 
 /** One block in a window. Width is in sixths of the window; the window grows to fit its blocks. */
 export interface WinBlock {
@@ -93,6 +100,8 @@ export interface WinBlock {
   text?: string;
   url?: string;
   src?: string;
+  /** Bills: the currency sign. */
+  currency?: string;
 }
 
 /** A row of the `elements` live query. */
@@ -157,6 +166,12 @@ export interface BoardMeta {
   id: string;
   name: string;
   pages: BoardPage[];
+  created_by?: string | null;
+  settings?: { creatorOnlyClear?: boolean };
+  /** The view-only code, for people who can edit. */
+  view_code?: string | null;
+  /** Opened with a view-only link. */
+  viewOnly?: boolean;
 }
 
 export interface HistoryEvent {

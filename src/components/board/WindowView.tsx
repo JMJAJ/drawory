@@ -5,7 +5,9 @@ import { createPortal } from "react-dom";
 import { Icon, type IconName } from "@/components/icons";
 import { api } from "@/lib/client/api";
 import { measuredHeights } from "@/lib/client/elements";
+import { deleteTemplate, freshBlocks, saveTemplate, templateBlocks, useTemplates } from "@/lib/client/templates";
 import type { Edit } from "@/lib/edits";
+import { detectLink } from "@/lib/client/media";
 import { stickerSrc } from "@/lib/stickers";
 import type { ElementData, ElementRow, ElementType, WinBlock, WinBlockKind } from "@/lib/types";
 import { ChatThread } from "./ChatThread";
@@ -21,6 +23,10 @@ const KINDS: { kind: WinBlockKind; label: string; icon: IconName }[] = [
   { kind: "link", label: "Link button", icon: "link" },
   { kind: "image", label: "Photo", icon: "image" },
   { kind: "divider", label: "Divider", icon: "divider" },
+  { kind: "dates", label: "When works?", icon: "calendar" },
+  { kind: "bills", label: "Split bills", icon: "coins" },
+  { kind: "kanban", label: "Kanban", icon: "columns" },
+  { kind: "music", label: "Music queue", icon: "youtube" },
   { kind: "slot", label: "Empty spot", icon: "plus" },
 ];
 const kindOf = (k: WinBlockKind) => KINDS.find((x) => x.kind === k) ?? KINDS[0];
@@ -56,6 +62,10 @@ function newBlock(kind: WinBlockKind, over: Partial<WinBlock> = {}): WinBlock {
     image: { title: "Photo", span: 2 },
     divider: { title: "", span: 6 },
     slot: { title: "", span: 2 },
+    dates: { title: "When works for everyone?", items: [] },
+    bills: { title: "Split the bill", items: [], currency: "€" },
+    kanban: { title: "Tasks", items: [], span: 6 },
+    music: { title: "Up next", items: [] },
   }[kind] as Partial<WinBlock>;
   return { ...base, ...extra, ...over } as WinBlock;
 }
@@ -182,6 +192,14 @@ const TEMPLATES: { id: string; label: string; hint: string; icon: IconName; titl
     icon: "trophy",
     title: "Best of",
     blocks: () => [newBlock("ranking", { title: "Vote your favourites", span: 6 })],
+  },
+  {
+    id: "trip",
+    label: "Trip planner",
+    hint: "Dates, costs, to-dos and chat",
+    icon: "calendar",
+    title: "Trip",
+    blocks: () => [newBlock("dates"), newBlock("bills"), newBlock("kanban", { title: "To do" }), newBlock("chat")],
   },
   {
     id: "board",
@@ -393,6 +411,19 @@ export function WindowView({ row, editing }: { row: ElementRow; editing: boolean
   }
 
   const canEdit = !ctx.readOnly;
+  const saved = useTemplates("window");
+  const [naming, setNaming] = useState<string | null>(null);
+  const [savedNote, setSavedNote] = useState<string | null>(null);
+  function saveAsTemplate() {
+    const name = (naming ?? "").trim() || d.title || "My window";
+    try {
+      saveTemplate({ kind: "window", name, window: { title: d.title, subtitle: d.subtitle, w: d.w, blocks: templateBlocks(current()) } });
+      setSavedNote(`Saved “${name}”. It's in the template list of every new window on this device.`);
+    } catch (e) {
+      setSavedNote(e instanceof Error ? e.message : "Couldn't save it");
+    }
+    setNaming(null);
+  }
   const dropUpload = useUpload();
   const [fileOver, setFileOver] = useState(false);
 
@@ -564,7 +595,38 @@ export function WindowView({ row, editing }: { row: ElementRow; editing: boolean
               </button>
             </>
           ) : (
-            <span className="win-tools-hint">{blocks.length ? "Select a block to size and align it, or drag it by its handle" : "Add your first block below"}</span>
+            <>
+            {blocks.length > 0 && naming === null && (
+              <button type="button" className="win-tb win-save-tpl" onClick={() => setNaming(d.title || "")}>
+                <Icon name="plus" size={15} /> Save as template
+              </button>
+            )}
+            {naming !== null && (
+              <form
+                className="win-name-tpl"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  saveAsTemplate();
+                }}
+              >
+                <input
+                  autoFocus
+                  className="win-input"
+                  aria-label="Template name"
+                  placeholder="Template name"
+                  value={naming}
+                  maxLength={40}
+                  data-interactive
+                  onChange={(e) => setNaming(e.target.value)}
+                  onKeyDown={(e) => e.key === "Escape" && setNaming(null)}
+                />
+                <button type="submit" className="btn btn-primary">
+                  Save
+                </button>
+              </form>
+            )}
+            <span className="win-tools-hint">{savedNote ?? (blocks.length ? "Select a block to size and align it, or drag it by its handle" : "Add your first block below")}</span>
+            </>
           )}
         </div>
       )}
@@ -652,7 +714,7 @@ export function WindowView({ row, editing }: { row: ElementRow; editing: boolean
                       )}
                       {!isClosed && (
                         <div className={`win-bb a-${b.align ?? "left"} v-${b.valign ?? "top"}`}>
-                          <BlockBody block={b} editing={editing} update={updater(b.id)} edit={(e) => ctx.edit(row.id, e)} />
+                          <BlockBody block={b} winId={row.id} editing={editing} update={updater(b.id)} edit={(e) => ctx.edit(row.id, e)} />
                         </div>
                       )}
                     </>
@@ -684,6 +746,39 @@ export function WindowView({ row, editing }: { row: ElementRow; editing: boolean
               </button>
             ))}
           </div>
+          {saved.length > 0 && (
+            <>
+              <div className="win-empty-label">Your templates</div>
+              <div className="win-templates">
+                {saved.map((t) => (
+                  <div key={t.id} className="win-template mine">
+                    <button
+                      type="button"
+                      className="win-template-use"
+                      data-interactive
+                      onClick={() =>
+                        ctx.patch(row.id, {
+                          blocks: freshBlocks(t.window?.blocks ?? []),
+                          title: t.window?.title || t.name,
+                          subtitle: t.window?.subtitle,
+                          ...(t.window?.w ? { w: t.window.w } : {}),
+                        })
+                      }
+                    >
+                      <Icon name="window" size={18} />
+                      <span>
+                        <strong>{t.name}</strong>
+                        <span className="muted">{t.window?.blocks.length ?? 0} blocks</span>
+                      </span>
+                    </button>
+                    <button type="button" className="win-x" data-interactive aria-label={`Delete the template ${t.name}`} onClick={() => deleteTemplate(t.id)}>
+                      <Icon name="close" size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
           {!editing && (
             <button type="button" className="btn btn-ghost win-blank" data-interactive onClick={() => ctx.startEditing(row.id)}>
               Or build your own
@@ -720,8 +815,16 @@ export function WindowView({ row, editing }: { row: ElementRow; editing: boolean
   );
 }
 
-function BlockBody({ block, editing, update, edit }: { block: WinBlock; editing: boolean; update: Update; edit: EditFn }) {
+function BlockBody({ block, winId, editing, update, edit }: { block: WinBlock; winId: string; editing: boolean; update: Update; edit: EditFn }) {
   switch (block.kind) {
+    case "dates":
+      return <DatesBlock block={block} editing={editing} edit={edit} />;
+    case "bills":
+      return <BillsBlock block={block} editing={editing} update={update} edit={edit} />;
+    case "kanban":
+      return <KanbanBlock block={block} editing={editing} edit={edit} />;
+    case "music":
+      return <MusicBlock block={block} winId={winId} editing={editing} edit={edit} />;
     case "ranking":
       return <RankingBlock block={block} editing={editing} update={update} edit={edit} />;
     case "poll":
@@ -1083,4 +1186,383 @@ function ImageBlock({ block, editing, update }: { block: WinBlock; editing: bool
       {up.error && <p className="win-error">{up.error}</p>}
     </>
   );
+}
+
+/* ---------- When works? ---------- */
+
+function slotLabel(text: string) {
+  const d = new Date(text);
+  if (Number.isNaN(d.getTime()) || !/\d{4}-\d{2}-\d{2}/.test(text)) return text;
+  return d.toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+}
+
+function DatesBlock({ block, editing, edit }: { block: WinBlock; editing: boolean; edit: EditFn }) {
+  const { me, readOnly } = useBoard();
+  const [when, setWhen] = useState("");
+  const options = [...(block.items ?? [])].sort((a, b) => a.text.localeCompare(b.text));
+  const counts = options.map((o) => block.votes?.[o.id]?.length ?? 0);
+  const best = Math.max(0, ...counts);
+  return (
+    <>
+      {options.length === 0 && <p className="win-hint">Suggest some times, then everyone ticks when they&apos;re free.</p>}
+      <ul className="win-dates">
+        {options.map((o, i) => {
+          const free = (block.votes?.[o.id] ?? []).includes(me.id);
+          return (
+            <li key={o.id} className={counts[i] === best && best > 0 ? "best" : undefined}>
+              <span className="win-date-text">{slotLabel(o.text)}</span>
+              <span className="win-date-n" title={`${counts[i]} free`}>
+                {counts[i]}
+              </span>
+              {editing ? (
+                <button type="button" className="win-x" aria-label={`Remove ${slotLabel(o.text)}`} onClick={() => edit({ k: "item-remove", block: block.id, item: o.id })}>
+                  <Icon name="close" size={14} />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="win-free"
+                  data-interactive
+                  aria-pressed={free}
+                  disabled={readOnly}
+                  onClick={() => edit({ k: "vote", block: block.id, option: o.id, user: me.id })}
+                >
+                  {free ? <Icon name="check" size={14} strokeWidth={3} /> : null}
+                  {free ? "Free" : "I'm free"}
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {!readOnly && (
+        <form
+          className="win-inline-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!when) return;
+            edit({ k: "item-add", block: block.id, item: { id: uid(), text: when, by: me.name } });
+            setWhen("");
+          }}
+        >
+          <input type="datetime-local" className="win-input" aria-label="Suggest a time" value={when} data-interactive onChange={(e) => setWhen(e.target.value)} />
+          <button type="submit" className="btn" data-interactive disabled={!when}>
+            Add
+          </button>
+        </form>
+      )}
+    </>
+  );
+}
+
+/* ---------- Split bills ---------- */
+
+function money(n: number, cur: string) {
+  const v = Math.abs(n) < 0.005 ? 0 : n;
+  return `${cur}${v.toFixed(2)}`;
+}
+
+/** Who pays whom, with as few payments as possible. */
+function settleUp(balances: Map<string, number>) {
+  const owe = [...balances].filter(([, v]) => v < -0.005).map(([n, v]) => ({ n, v: -v })).sort((a, b) => b.v - a.v);
+  const get = [...balances].filter(([, v]) => v > 0.005).map(([n, v]) => ({ n, v })).sort((a, b) => b.v - a.v);
+  const out: { from: string; to: string; amount: number }[] = [];
+  let i = 0, j = 0;
+  while (i < owe.length && j < get.length) {
+    const amount = Math.min(owe[i].v, get[j].v);
+    out.push({ from: owe[i].n, to: get[j].n, amount });
+    owe[i].v -= amount;
+    get[j].v -= amount;
+    if (owe[i].v < 0.005) i++;
+    if (get[j].v < 0.005) j++;
+  }
+  return out;
+}
+
+function BillsBlock({ block, editing, update, edit }: { block: WinBlock; editing: boolean; update: Update; edit: EditFn }) {
+  const { me, people, readOnly } = useBoard();
+  const cur = block.currency || "€";
+  const items = block.items ?? [];
+  const names = [...new Set([me.name, ...people.map((p) => p.name), ...items.flatMap((i) => [i.by ?? "", ...(i.split ?? [])])].filter(Boolean))];
+  const [what, setWhat] = useState("");
+  const [amount, setAmount] = useState("");
+  const [payer, setPayer] = useState(me.name);
+  const [left, setLeft] = useState<ReadonlySet<string>>(new Set()); // people left out of this one
+
+  const balances = new Map<string, number>(names.map((n) => [n, 0]));
+  let total = 0;
+  for (const it of items) {
+    const amt = it.amount ?? 0;
+    const split = it.split?.length ? it.split : names;
+    total += amt;
+    balances.set(it.by ?? "?", (balances.get(it.by ?? "?") ?? 0) + amt);
+    for (const n of split) balances.set(n, (balances.get(n) ?? 0) - amt / split.length);
+  }
+  const plan = settleUp(balances);
+
+  return (
+    <>
+      {items.length === 0 && <p className="win-hint">Add what someone paid. It works out who owes whom.</p>}
+      <ul className="win-bills">
+        {items.map((it) => (
+          <li key={it.id}>
+            <span className="win-bill-text">
+              <strong>{it.text}</strong>
+              <span className="win-meta">
+                {it.by} paid{it.split?.length && it.split.length < names.length ? ` · for ${it.split.join(", ")}` : ""}
+              </span>
+            </span>
+            <span className="win-bill-amt">{money(it.amount ?? 0, cur)}</span>
+            {editing && (
+              <button type="button" className="win-x" aria-label={`Remove ${it.text}`} onClick={() => edit({ k: "item-remove", block: block.id, item: it.id })}>
+                <Icon name="close" size={14} />
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {items.length > 0 && (
+        <div className="win-settle">
+          <div className="win-meta">Total {money(total, cur)}</div>
+          {plan.length === 0 ? (
+            <div className="win-square">Everyone&apos;s square</div>
+          ) : (
+            plan.map((p, i) => (
+              <div key={i} className="win-owe">
+                <strong>{p.from}</strong> pays <strong>{p.to}</strong> <span>{money(p.amount, cur)}</span>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+      {editing && (
+        <label className="win-currency">
+          Currency sign
+          <input className="win-input" defaultValue={cur} maxLength={4} data-interactive onBlur={(e) => update({ currency: e.target.value.trim() || "€" })} />
+        </label>
+      )}
+      {!readOnly && !editing && (
+        <form
+          className="win-bill-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const amt = Number(amount.replace(",", "."));
+            if (!what.trim() || !Number.isFinite(amt) || amt <= 0) return;
+            const split = names.filter((n) => !left.has(n));
+            edit({
+              k: "item-add",
+              block: block.id,
+              item: { id: uid(), text: what.trim().slice(0, 80), amount: Math.round(amt * 100) / 100, by: payer, split: split.length === names.length ? [] : split },
+            });
+            setWhat("");
+            setAmount("");
+            setLeft(new Set());
+          }}
+        >
+          <div className="win-bill-row">
+            <input className="win-input" aria-label="What for" placeholder="Pizza" value={what} data-interactive onChange={(e) => setWhat(e.target.value)} />
+            <input className="win-input win-amt" aria-label="Amount" placeholder="0.00" inputMode="decimal" value={amount} data-interactive onChange={(e) => setAmount(e.target.value)} />
+          </div>
+          <div className="win-bill-row">
+            <label className="win-meta" htmlFor={`payer-${block.id}`}>
+              Paid by
+            </label>
+            <select id={`payer-${block.id}`} className="win-input" value={payer} data-interactive onChange={(e) => setPayer(e.target.value)}>
+              {names.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="win-split" role="group" aria-label="Split between">
+            {names.map((n) => (
+              <button
+                key={n}
+                type="button"
+                className="win-split-chip"
+                data-interactive
+                aria-pressed={!left.has(n)}
+                onClick={() =>
+                  setLeft((s) => {
+                    const next = new Set(s);
+                    if (next.has(n)) next.delete(n);
+                    else next.add(n);
+                    return next;
+                  })
+                }
+              >
+                {n}
+              </button>
+            ))}
+          </div>
+          <button type="submit" className="btn btn-primary" data-interactive disabled={!what.trim() || !amount}>
+            Add expense
+          </button>
+        </form>
+      )}
+    </>
+  );
+}
+
+/* ---------- Kanban ---------- */
+
+const COLUMNS = [
+  { id: "todo", label: "To do" },
+  { id: "doing", label: "Doing" },
+  { id: "done", label: "Done" },
+];
+
+function KanbanBlock({ block, editing, edit }: { block: WinBlock; editing: boolean; edit: EditFn }) {
+  const { me, readOnly } = useBoard();
+  const cards = block.items ?? [];
+  return (
+    <div className="win-kanban">
+      {COLUMNS.map((col, ci) => {
+        const mine = cards.filter((c) => (c.col ?? "todo") === col.id);
+        return (
+          <div key={col.id} className={`win-col col-${col.id}`}>
+            <div className="win-col-head">
+              {col.label} <span>{mine.length}</span>
+            </div>
+            {mine.map((c) => (
+              <div key={c.id} className="win-card">
+                <span className="win-card-text">{c.text}</span>
+                <div className="win-card-moves">
+                  {editing ? (
+                    <button type="button" className="win-x" aria-label={`Remove ${c.text}`} onClick={() => edit({ k: "item-remove", block: block.id, item: c.id })}>
+                      <Icon name="close" size={13} />
+                    </button>
+                  ) : (
+                    <>
+                      {ci > 0 && (
+                        <button
+                          type="button"
+                          className="win-x"
+                          data-interactive
+                          disabled={readOnly}
+                          aria-label={`Move ${c.text} to ${COLUMNS[ci - 1].label}`}
+                          onClick={() => edit({ k: "item-set", block: block.id, item: c.id, set: { col: COLUMNS[ci - 1].id } })}
+                        >
+                          <Icon name="arrowLeft" size={13} />
+                        </button>
+                      )}
+                      {ci < COLUMNS.length - 1 && (
+                        <button
+                          type="button"
+                          className="win-x"
+                          data-interactive
+                          disabled={readOnly}
+                          aria-label={`Move ${c.text} to ${COLUMNS[ci + 1].label}`}
+                          onClick={() => edit({ k: "item-set", block: block.id, item: c.id, set: { col: COLUMNS[ci + 1].id } })}
+                        >
+                          <Icon name="arrowRight" size={13} />
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+            {ci === 0 && !readOnly && (
+              <AddItem placeholder="Add a card" onAdd={(text) => edit({ k: "item-add", block: block.id, item: { id: uid(), text, col: "todo", by: me.name } })} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ---------- Music queue ---------- */
+
+function MusicBlock({ block, winId, editing, edit }: { block: WinBlock; winId: string; editing: boolean; edit: EditFn }) {
+  const ctx = useBoard();
+  const [link, setLink] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const queue = block.items ?? [];
+  function play(it: (typeof queue)[number]) {
+    const found = it.url ? detectLink(it.url) : null;
+    if (found?.kind !== "youtube") return;
+    ctx.playSong(winId, block.id, found.videoId, it.text);
+    edit({ k: "item-remove", block: block.id, item: it.id });
+  }
+  return (
+    <>
+      {queue.length === 0 && <p className="win-hint">Paste YouTube links. Play sends a song to a Watch together card.</p>}
+      {queue.length > 0 && !ctx.readOnly && !editing && (
+        <button type="button" className="btn btn-primary win-play-next" data-interactive onClick={() => play(queue[0])}>
+          <Icon name="play" size={14} /> Play next
+        </button>
+      )}
+      <ol className="win-queue">
+        {queue.map((it, i) => (
+          <li key={it.id}>
+            <span className="win-rank-n">{i + 1}</span>
+            <span className="win-bill-text">
+              <strong>{it.text}</strong>
+              {it.by && <span className="win-meta">added by {it.by}</span>}
+            </span>
+            {editing ? (
+              <button type="button" className="win-x" aria-label={`Remove ${it.text}`} onClick={() => edit({ k: "item-remove", block: block.id, item: it.id })}>
+                <Icon name="close" size={14} />
+              </button>
+            ) : (
+              !ctx.readOnly && (
+                <button type="button" className="win-x" data-interactive aria-label={`Play ${it.text}`} title="Play now" onClick={() => play(it)}>
+                  <Icon name="play" size={14} />
+                </button>
+              )
+            )}
+          </li>
+        ))}
+      </ol>
+      {!ctx.readOnly && (
+        <form
+          className="win-inline-form"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            const found = detectLink(link.trim());
+            if (found?.kind !== "youtube") {
+              setError("Paste a YouTube link");
+              return;
+            }
+            setBusy(true);
+            setError(null);
+            const title = await videoTitle(found.url);
+            edit({ k: "item-add", block: block.id, item: { id: uid(), text: title, url: found.url, by: ctx.me.name } });
+            setLink("");
+            setBusy(false);
+          }}
+        >
+          <input
+            className="win-input"
+            aria-label="YouTube link"
+            placeholder="Paste a YouTube link"
+            value={link}
+            data-interactive
+            onChange={(e) => {
+              setLink(e.target.value);
+              setError(null);
+            }}
+          />
+          <button type="submit" className="btn" data-interactive disabled={!link.trim() || busy}>
+            {busy ? "…" : "Add"}
+          </button>
+        </form>
+      )}
+      {error && <p className="win-error">{error}</p>}
+    </>
+  );
+}
+
+/** A video's title from its link (falls back to a plain name). */
+async function videoTitle(url: string) {
+  try {
+    const r = await api.unfurl(url);
+    return (r.title || "YouTube video").slice(0, 120);
+  } catch {
+    return "YouTube video";
+  }
 }

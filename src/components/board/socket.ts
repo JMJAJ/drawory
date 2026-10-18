@@ -50,7 +50,7 @@ function toRow(p: Partial<PresenceRow> & { user_id: string }, at: number): Prese
   };
 }
 
-export function useRoomSocket(boardId: string, userId: string, onClock: (serverNow: number, rtt: number) => void) {
+export function useRoomSocket(boardId: string, userId: string, onClock: (serverNow: number, rtt: number) => void, enabled = true) {
   const [connected, setConnected] = useState(false);
   const [peers, setPeers] = useState<Map<string, PresenceRow>>(() => new Map());
   const wsRef = useRef<WebSocket | null>(null);
@@ -61,6 +61,7 @@ export function useRoomSocket(boardId: string, userId: string, onClock: (serverN
   }, [onClock]);
 
   useEffect(() => {
+    if (!enabled) return;
     let stopped = false;
     let attempts = 0;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -160,7 +161,7 @@ export function useRoomSocket(boardId: string, userId: string, onClock: (serverN
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [boardId, userId]);
+  }, [boardId, userId, enabled]);
 
   /** Sends if connected; returns false otherwise so the caller can fall back. */
   const send = useCallback((msg: object) => {

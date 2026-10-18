@@ -10,6 +10,7 @@ import { stickerSrc } from "@/lib/stickers";
 import type { ElementRow } from "@/lib/types";
 import { ChatThread } from "./ChatThread";
 import { WindowView } from "./WindowView";
+import { PhotoFrame } from "./PhotoEditor";
 import { useBoard } from "./context";
 import { loadYouTube, type YTPlayer } from "./youtube";
 
@@ -315,10 +316,21 @@ function ImageView({ row, editing }: { row: ElementRow; editing: boolean }) {
   const d = row.data;
   return (
     <div className="card media-card">
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={d.src} alt={d.caption || "Photo"} style={{ height: (d.h ?? 300) - (d.caption || editing ? 52 : 16) }} draggable={false} />
+      <div
+        className="photo-area"
+        style={{
+          height: (d.h ?? 300) - (d.caption || editing ? 52 : 16),
+          ["--frame-w" as string]: `${(d.w ?? 300) - 12}px`,
+          ["--frame-h" as string]: `${(d.h ?? 300) - (d.caption || editing ? 52 : 16)}px`,
+        }}
+      >
+        <PhotoFrame src={d.src} alt={d.caption || "Photo"} crop={d.crop} rotate={d.rotate} />
+      </div>
       {editing ? (
         <div className="media-caption">
+          <button type="button" className="icon-btn sm" aria-label="Crop and rotate" title="Crop and rotate" data-interactive onClick={() => ctx.editPhoto(row.id)}>
+            <Icon name="crop" size={18} />
+          </button>
           <input
             className="input"
             aria-label="Caption"
