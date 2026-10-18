@@ -1,6 +1,6 @@
 # drawory
 
-An endless canvas for two. Draw, write, stick stickers, drop photos and videos, watch YouTube together, leave voice notes, seal time capsules, and replay everything in Memory Lane. Day and night themes.
+An endless canvas you share. Built for two, and anyone else you invite can draw and edit at the same time, each with their own cursor color. Draw, write, stick stickers, drop photos and videos, watch YouTube together, leave voice notes, seal time capsules, and replay everything in Memory Lane. Day and night themes.
 
 Built with Next.js 16 and Neon (Postgres + Realtime live queries).
 

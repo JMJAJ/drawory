@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "@/components/icons";
 import { api } from "@/lib/client/api";
-import { PERSON_COLORS, type Me } from "@/lib/client/identity";
+import { PERSON_COLORS, textOn, type Me } from "@/lib/client/identity";
 import { detectLink, type DetectedLink } from "@/lib/client/media";
 
 export function Modal({
@@ -48,7 +48,7 @@ export function Modal({
 
 /* ---------- First visit: who are you? ---------- */
 
-export function SetupDialog({ initial, onDone }: { initial?: Me | null; onDone: (me: Me) => void }) {
+export function SetupDialog({ initial, onDone, onCancel }: { initial?: Me | null; onDone: (me: Me) => void; onCancel?: () => void }) {
   const [name, setName] = useState(initial?.name ?? "");
   const [color, setColor] = useState(initial?.color ?? PERSON_COLORS[0].value);
   return (
@@ -67,7 +67,7 @@ export function SetupDialog({ initial, onDone }: { initial?: Me | null; onDone: 
           <h2>{initial ? "You" : "Who's drawing?"}</h2>
         </div>
         <p className="muted" style={{ margin: 0 }}>
-          Your name and color show on your cursor and everything you add. This device remembers it.
+          Everyone on the board sees your cursor in this color. Pick a different one from the others so you can tell each other apart. This device remembers it.
         </p>
         <div>
           <label className="field-label" htmlFor="me-name">
@@ -90,9 +90,31 @@ export function SetupDialog({ initial, onDone }: { initial?: Me | null; onDone: 
                 onClick={() => setColor(c.value)}
               />
             ))}
+            <label
+              className="swatch custom-swatch"
+              aria-checked={!PERSON_COLORS.some((c) => c.value === color)}
+              title="Pick any color"
+              style={{ width: 40, height: 40, background: PERSON_COLORS.some((c) => c.value === color) ? undefined : color }}
+            >
+              <span className="sr-only">Pick any color</span>
+              <input type="color" value={/^#[0-9a-f]{6}$/i.test(color) ? color : "#d13f58"} onChange={(e) => setColor(e.target.value.toUpperCase())} />
+            </label>
+          </div>
+          <div className="cursor-preview" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24">
+              <path d="M4 3l7 18 2.6-7.4L21 11z" fill={color} stroke="var(--surface)" strokeWidth="1.5" strokeLinejoin="round" />
+            </svg>
+            <span className="cursor-label" style={{ background: color, color: textOn(color) }}>
+              {name.trim() || "You"}
+            </span>
           </div>
         </div>
         <div className="dialog-foot">
+          {onCancel && (
+            <button type="button" className="btn" onClick={onCancel}>
+              Cancel
+            </button>
+          )}
           <button className="btn btn-primary" disabled={!name.trim()}>
             {initial ? "Save" : "Start drawing"}
           </button>

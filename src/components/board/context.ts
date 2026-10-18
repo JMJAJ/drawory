@@ -11,8 +11,8 @@ export interface BoardCtx {
   me: Me;
   readOnly: boolean;
   zoom: number;
-  partnerName: string | null;
-  partnerWatching: string | null;
+  /** Names of other people currently playing each YouTube element, keyed by element id. */
+  watchers: Record<string, string[]>;
   /** Change an element. commit=false only updates this screen (used while typing or dragging). */
   patch(id: string, data: Partial<ElementData>, commit?: boolean): void;
   finishText(id: string, text: string): void;

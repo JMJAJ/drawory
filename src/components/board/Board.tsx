@@ -20,7 +20,7 @@ import {
   unionBounds,
   type Camera,
 } from "@/lib/client/elements";
-import { initials, type Me } from "@/lib/client/identity";
+import { initials, textOn, type Me } from "@/lib/client/identity";
 import { audioPeaks, detectLink, fitWithin, imageSize, videoSize, type DetectedLink } from "@/lib/client/media";
 import type { BoardMeta, ElementData, ElementRow, ElementType, PresenceRow, SignalRow } from "@/lib/types";
 import { BoardContext, type BoardCtx, type YtCommand } from "./context";
@@ -164,7 +164,8 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
   const [stickersOpen, setStickersOpen] = useState(false);
   const [toast, setToast] = useState<{ id: number; text: string; heart?: boolean } | null>(null);
   const [hearts, setHearts] = useState<{ id: number; x: number; y: number; dx: number; delay: number }[]>([]);
-  const [following, setFollowing] = useState(false);
+  const [followId, setFollowId] = useState<string | null>(null);
+  const setFollowing = (on: boolean) => !on && setFollowId(null);
   const [laneOpen, setLaneOpen] = useState(false);
   const [laneRows, setLaneRows] = useState<ElementRow[] | null>(null);
   const [board, setBoard] = useState<BoardMeta | null>(null);
@@ -442,11 +443,15 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
   }, [pushPresence]);
   useEffect(schedulePresence, [camera, tool, watching, schedulePresence]);
 
-  const partner = useMemo(() => {
-    const others = (prQ.data ?? []).filter((p) => p.user_id !== me.id);
-    return [...others].sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime())[0] ?? null;
-  }, [prQ.data, me.id]);
-  const partnerOnline = !!partner && now - partner.updated_at.getTime() < ONLINE_MS;
+  // Everyone else who has ever opened this board, most recently active first.
+  const others = useMemo(
+    () => (prQ.data ?? []).filter((p) => p.user_id !== me.id).sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime()),
+    [prQ.data, me.id],
+  );
+  const online = useMemo(() => others.filter((p) => now - p.updated_at.getTime() < ONLINE_MS), [others, now]);
+  // The most recent other person, for the "was here" line when nobody else is online.
+  const partner = online[0] ?? others[0] ?? null;
+  const partnerOnline = online.length > 0;
   const places = useMemo(
     () => rows.filter((r) => r.type === "place").sort((a, b) => a.created_at.getTime() - b.created_at.getTime()),
     [rows],
@@ -455,27 +460,27 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
     (wx: number, wy: number) => places.find((p) => contains(bounds(p), { x: wx, y: wy, w: 0, h: 0 })) ?? null,
     [places],
   );
-  const partnerPlace = useMemo(() => {
-    if (!partner || !partnerOnline || !partner.zoom) return null;
-    const cx = (partner.view_w / 2 - partner.view_x) / partner.zoom;
-    const cy = (partner.view_h / 2 - partner.view_y) / partner.zoom;
-    return placeAt(cx, cy);
-  }, [partner, partnerOnline, placeAt]);
+  const placeOf = useCallback(
+    (p: PresenceRow) => (p.zoom ? placeAt((p.view_w / 2 - p.view_x) / p.zoom, (p.view_h / 2 - p.view_y) / p.zoom) : null),
+    [placeAt],
+  );
+  const partnerPlace = useMemo(() => (online.length === 1 ? placeOf(online[0]) : null), [online, placeOf]);
   const myPlace = useMemo(() => {
     if (typeof window === "undefined") return null;
     return placeAt((window.innerWidth / 2 - camera.x) / camera.zoom, (window.innerHeight / 2 - camera.y) / camera.zoom);
   }, [camera, placeAt]);
 
-  // Follow their view: keep the same world centre and zoom as them.
-  const followActive = following && partnerOnline;
+  // Follow someone's view: keep the same world centre and zoom as them.
+  const followed = followId ? online.find((p) => p.user_id === followId) ?? null : null;
+  const followActive = !!followed;
   useEffect(() => {
-    if (!followActive || !partner) return;
-    const z = clampZoom(partner.zoom);
-    const cx = (partner.view_w / 2 - partner.view_x) / partner.zoom;
-    const cy = (partner.view_h / 2 - partner.view_y) / partner.zoom;
+    if (!followed) return;
+    const z = clampZoom(followed.zoom);
+    const cx = (followed.view_w / 2 - followed.view_x) / followed.zoom;
+    const cy = (followed.view_h / 2 - followed.view_y) / followed.zoom;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- mirrors their camera as their presence row changes
     setCamera({ zoom: z, x: window.innerWidth / 2 - cx * z, y: window.innerHeight / 2 - cy * z });
-  }, [followActive, partner, setCamera]);
+  }, [followed, setCamera]);
 
   /* ---------- Signals: hearts, synced video ---------- */
   const spawnHearts = useCallback((x: number, y: number) => {
@@ -491,10 +496,10 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
     setTimeout(() => setHearts((h) => h.filter((p) => !burst.includes(p))), 2400);
   }, []);
   const seenSignals = useRef<Set<string> | null>(null);
-  const partnerRef = useRef(partner);
+  const othersRef = useRef(others);
   useEffect(() => {
-    partnerRef.current = partner;
-  }, [partner]);
+    othersRef.current = others;
+  }, [others]);
   useEffect(() => {
     const data = sgQ.data;
     if (!data) return;
@@ -507,7 +512,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
       seenSignals.current.add(s.id);
       if (s.from_user === me.id) continue;
       if (s.kind === "heart") {
-        const p = partnerRef.current;
+        const p = othersRef.current.find((o) => o.user_id === s.from_user);
         const c = cam.current;
         const visible = p?.cursor_x != null && p.cursor_y != null;
         const x = visible ? p!.cursor_x! * c.zoom + c.x : window.innerWidth - 220;
@@ -985,7 +990,11 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
   });
 
   /* ---------- Context for element views ---------- */
-  const partnerWatching = partnerOnline ? partner?.watching ?? null : null;
+  const watchers = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    for (const p of online) if (p.watching) (map[p.watching] ??= []).push(p.name);
+    return map;
+  }, [online]);
   const sendYt = useCallback(
     (elementId: string, cmd: Omit<YtCommand, "sentAt">) => {
       void api.signal(boardId, "yt", me.id, { elementId, ...cmd, sentAt: Date.now() }).catch(() => {});
@@ -1023,8 +1032,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
       me,
       readOnly: laneOpen,
       zoom: camera.zoom,
-      partnerName: partner?.name ?? null,
-      partnerWatching,
+      watchers,
       patch,
       finishText,
       stopEditing: () => setEditingId(null),
@@ -1034,7 +1042,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
       openCapsule: (id) => setDialog({ kind: "capsuleOpen", id, title: rowsRef.current.get(id)?.data.title || "Time capsule" }),
       addToCapsule: (id) => setDialog({ kind: "capsuleNote", id }),
     }),
-    [boardId, me, laneOpen, camera.zoom, partner?.name, partnerWatching, patch, finishText, sendYt, onYt],
+    [boardId, me, laneOpen, camera.zoom, watchers, patch, finishText, sendYt, onYt],
   );
 
   /* ---------- Render ---------- */
@@ -1126,17 +1134,20 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
             </div>
           )}
           {draft && draft.type !== "stroke" && <ElementView row={draft} selected={false} editing={false} likes={0} />}
-          {!laneOpen && partnerOnline && partner?.cursor_x != null && partner.cursor_y != null && (
-            <div className="cursor" style={{ transform: `translate(${partner.cursor_x}px, ${partner.cursor_y}px) scale(${1 / camera.zoom})` }}>
-              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 3l7 18 2.6-7.4L21 11z" fill={partner.color} stroke="var(--surface)" strokeWidth="1.5" strokeLinejoin="round" />
-              </svg>
-              <div className="cursor-label" style={{ background: partner.color }}>
-                {partner.name}
-                {partner.tool === "pen" ? " · drawing" : ""}
-              </div>
-            </div>
-          )}
+          {!laneOpen &&
+            online.map((p) =>
+              p.cursor_x == null || p.cursor_y == null ? null : (
+                <div key={p.user_id} className="cursor" style={{ transform: `translate(${p.cursor_x}px, ${p.cursor_y}px) scale(${1 / camera.zoom})` }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 3l7 18 2.6-7.4L21 11z" fill={p.color} stroke="var(--surface)" strokeWidth="1.5" strokeLinejoin="round" />
+                  </svg>
+                  <div className="cursor-label" style={{ background: p.color, color: textOn(p.color) }}>
+                    {p.name}
+                    {p.tool === "pen" ? " · drawing" : p.tool === "eraser" ? " · erasing" : ""}
+                  </div>
+                </div>
+              ),
+            )}
         </div>
 
         {dropping && <div className="drop-hint">Drop to add to the board</div>}
@@ -1195,7 +1206,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
       {laneOpen ? (
         <MemoryLane
           boardId={boardId}
-          partnerName={partner?.name ?? null}
+          partnerName={others.length === 1 ? others[0].name : null}
           theme={theme}
           onToggleTheme={toggleTheme}
           onRows={setLaneRows}
@@ -1241,12 +1252,31 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <div className="pill partner">
                 <div className="partner-avatars">
-                  <span className="avatar" title={me.name} style={{ background: me.color }}>
+                  <span className="avatar" title={`${me.name} (you)`} style={{ background: me.color, color: textOn(me.color) }}>
                     {initials(me.name)}
                   </span>
                   <Icon name="heart" size={12} filled style={{ color: "var(--accent)" }} />
-                  {partner ? (
-                    <span className={`avatar${partnerOnline ? " online-ring" : ""}`} title={partner.name} style={{ background: partner.color, opacity: partnerOnline ? 1 : 0.55 }}>
+                  {online.length > 0 ? (
+                    <div className="people">
+                      {online.slice(0, 4).map((p) => (
+                        <button
+                          key={p.user_id}
+                          type="button"
+                          className="person"
+                          aria-label={followId === p.user_id ? `Stop following ${p.name}` : `Follow ${p.name}'s view`}
+                          aria-pressed={followId === p.user_id}
+                          title={`${p.name}${placeOf(p) ? ` · in ${placeOf(p)!.data.name}` : ""} · click to follow`}
+                          onClick={() => setFollowId((id) => (id === p.user_id ? null : p.user_id))}
+                        >
+                          <span className="avatar online-ring" style={{ background: p.color, color: textOn(p.color) }}>
+                            {initials(p.name)}
+                          </span>
+                        </button>
+                      ))}
+                      {online.length > 4 && <span className="avatar more" title={online.slice(4).map((p) => p.name).join(", ")}>+{online.length - 4}</span>}
+                    </div>
+                  ) : partner ? (
+                    <span className="avatar" title={partner.name} style={{ background: partner.color, color: textOn(partner.color), opacity: 0.55 }}>
                       {initials(partner.name)}
                     </span>
                   ) : (
@@ -1255,27 +1285,29 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
                 </div>
                 <div className="partner-text">
                   <strong>
-                    {!partner
-                      ? "Waiting for your person"
-                      : partnerOnline
+                    {online.length > 1
+                      ? `${online.slice(0, 2).map((p) => p.name).join(", ")}${online.length > 2 ? ` +${online.length - 2}` : ""} are here`
+                      : online.length === 1
                         ? partnerPlace
-                          ? `${partner.name} is in ${partnerPlace.data.name}`
-                          : `${partner.name} is here`
-                        : `${partner.name} was here ${relativeTime(partner.updated_at)}`}
+                          ? `${online[0].name} is in ${partnerPlace.data.name}`
+                          : `${online[0].name} is here`
+                        : partner
+                          ? `${partner.name} was here ${relativeTime(partner.updated_at)}`
+                          : "Waiting for your person"}
                   </strong>
                   <span>{togetherDays ? `day ${togetherDays} of us` : "set your day one in the menu"}</span>
                 </div>
-                <button type="button" className="icon-btn heart-btn" aria-label={`Send ${partner?.name ?? "them"} a heart`} title="Send a heart" onClick={sendHeart}>
+                <button type="button" className="icon-btn heart-btn" aria-label={online.length > 1 ? "Send everyone a heart" : `Send ${partner?.name ?? "them"} a heart`} title="Send a heart" onClick={sendHeart}>
                   <Icon name="heart" filled />
                 </button>
                 <button
                   type="button"
                   className="icon-btn"
-                  aria-label={followActive ? "Stop following" : `Follow ${partner?.name ?? "their"} view`}
-                  title={partnerOnline ? "Follow their view" : "They're not here right now"}
+                  aria-label={followActive ? `Stop following ${followed!.name}` : `Follow ${online[0]?.name ?? "their"} view`}
+                  title={followActive ? `Following ${followed!.name}` : partnerOnline ? `Follow ${online[0].name}'s view (or click anyone's avatar)` : "Nobody else is here right now"}
                   aria-pressed={followActive}
                   disabled={!partnerOnline}
-                  onClick={() => setFollowing((f) => !f)}
+                  onClick={() => setFollowId(followActive ? null : online[0]?.user_id ?? null)}
                 >
                   <Icon name="eye" />
                 </button>
@@ -1468,6 +1500,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
       {dialog?.kind === "me" && (
         <SetupDialog
           initial={me}
+          onCancel={() => setDialog(null)}
           onDone={(next) => {
             onChangeMe(next);
             setDialog(null);

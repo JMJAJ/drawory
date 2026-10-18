@@ -382,8 +382,10 @@ function YouTubeView({ row }: { row: ElementRow }) {
     [onYt, row.id],
   );
 
-  const together = playing && ctx.partnerWatching === row.id;
-  const partnerOnly = !playing && ctx.partnerWatching === row.id;
+  const others = ctx.watchers[row.id] ?? [];
+  const together = playing && others.length > 0;
+  const partnerOnly = !playing && others.length > 0;
+  const names = others.length > 2 ? `${others.slice(0, 2).join(", ")} +${others.length - 2}` : others.join(" & ");
   const height = (d.h ?? 300) - 74;
 
   return (
@@ -392,7 +394,7 @@ function YouTubeView({ row }: { row: ElementRow }) {
         {(together || partnerOnly) && (
           <div className="together-badge">
             <Icon name="sync" size={14} strokeWidth={2.4} />
-            {together ? "Watching together" : `${ctx.partnerName ?? "They"} is watching`}
+            {together ? `Watching with ${names}` : `${names} ${others.length > 1 ? "are" : "is"} watching`}
           </div>
         )}
         <div ref={host} />
