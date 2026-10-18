@@ -173,7 +173,7 @@ const NO_CHAT: readonly ChatRow[] = [];
 /** What can be turned into an emoji. */
 const EMOJI_TYPES: ElementType[] = ["stroke", "rect", "ellipse", "arrow", "image", "sticker", "text", "sticky"];
 /** Lofi Girl's live radio, for the focus timer. */
-const LOFI_VIDEO = "jfKfPfyJRdk";
+const LOFI_VIDEO = "rFZHOHl-L8A";
 const NO_UNREAD: Unread = { count: 0, mention: false, firstId: null };
 /** Types you can open for editing (double-click, double-tap or the pen button). */
 const EDITABLE: ElementType[] = ["text", "note", "image", "chatbox", "sticky", "window", "rect", "ellipse"];
