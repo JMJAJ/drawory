@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // The Cloudflare relay is its own project with its own types.
+    "relay/**",
   ]),
 ]);
 

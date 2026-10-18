@@ -3,9 +3,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PresenceRow } from "@/lib/types";
 
-// The room's live relay (server.mjs, path /ws): cursors, live activity, waves and video sync arrive
-// in tens of milliseconds, without going through the database. If it can't connect (a host
-// without WebSockets, like Vercel), `connected` stays false and the board uses Neon for all of it.
+// The room's live relay: cursors, live activity, waves and video sync arrive in tens of milliseconds,
+// without going through the database. It's either the Cloudflare relay in /relay (set
+// NEXT_PUBLIC_RELAY_URL, e.g. on Vercel) or server.mjs's own /ws (self-hosted). If neither can be
+// reached, `connected` stays false and the board uses Neon for all of it.
+
+/** e.g. "wss://drawory-relay.you.workers.dev". Unset: the same server the page came from. */
+const RELAY_URL = (process.env.NEXT_PUBLIC_RELAY_URL ?? "").replace(/\/+$/, "");
+
+function relayAddress(boardId: string, userId: string) {
+  const query = `room=${encodeURIComponent(boardId)}&user=${encodeURIComponent(userId)}`;
+  if (RELAY_URL) return `${RELAY_URL.replace(/^http/, "ws")}/ws?${query}`;
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${location.host}/ws?${query}`;
+}
 
 export type SocketSignal = { kind: "wave" | "yt"; from: string; payload: Record<string, unknown> };
 type Incoming =
@@ -77,8 +88,7 @@ export function useRoomSocket(boardId: string, userId: string, onClock: (serverN
 
     const connect = () => {
       if (stopped) return;
-      const proto = location.protocol === "https:" ? "wss" : "ws";
-      const ws = new WebSocket(`${proto}://${location.host}/ws?room=${encodeURIComponent(boardId)}&user=${encodeURIComponent(userId)}`);
+      const ws = new WebSocket(relayAddress(boardId, userId));
       wsRef.current = ws;
       let pingSentAt = 0;
 

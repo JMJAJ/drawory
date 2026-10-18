@@ -1,12 +1,14 @@
 // Checks the live relay on a running server: node --env-file=.env.local scripts/ws-check.mjs ws://localhost:3000
+// With the Cloudflare relay, pass it second: ... ws://localhost:3000 wss://drawory-relay.<you>.workers.dev
 // Creates a throwaway room, measures relay latency, and deletes the room.
 import { WebSocket } from "ws";
 const base = process.argv[2];
+const relay = process.argv[3] ?? base;
 const make = (name) => fetch(base.replace("ws", "http") + "/api/rooms", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) }).then((r) => r.json());
 const room = (await make("ws test")).id;
-const open = (user) => new Promise((res, rej) => { const ws = new WebSocket(`${base}/ws?room=${room}&user=${user}`); ws.on("open", () => res(ws)); ws.on("error", rej); ws.on("unexpected-response", (_q, r) => rej(new Error("status " + r.statusCode))); });
+const open = (user) => new Promise((res, rej) => { const ws = new WebSocket(`${relay}/ws?room=${room}&user=${user}`, { headers: { Origin: "http://localhost:3000" } }); ws.on("open", () => res(ws)); ws.on("error", rej); ws.on("unexpected-response", (_q, r) => rej(new Error("status " + r.statusCode))); });
 const first = await open("x").catch((e) => e);
-const missing = await new Promise((res) => { const ws = new WebSocket(`${base}/ws?room=nosuchroom&user=a`); ws.on("unexpected-response", (_q, r) => res(r.statusCode)); ws.on("open", () => res("opened?!")); });
+const missing = await new Promise((res) => { const ws = new WebSocket(`${relay}/ws?room=nosuchroom&user=a`, { headers: { Origin: "http://localhost:3000" } }); ws.on("unexpected-response", (_q, r) => res(r.statusCode)); ws.on("open", () => res("opened?!")); });
 const a = await open("alice");
 const b = await open("bob");
 const times = [];

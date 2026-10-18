@@ -5,7 +5,8 @@ function allowedOrigins() {
     .split(",")
     .map((o) => o.trim().replace(/\/+$/, ""))
     .filter(Boolean);
-  return [...new Set(["http://localhost:3000", ...extra])];
+  // The always-on site; add more (a tunnel, your own domain) through APP_ORIGINS.
+  return [...new Set(["http://localhost:3000", "https://drawory.vercel.app", ...extra])];
 }
 
 export default defineConfig({

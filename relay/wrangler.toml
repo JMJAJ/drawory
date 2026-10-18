@@ -1,0 +1,20 @@
+# drawory's live relay on Cloudflare Workers (free plan).
+# Deploy: cd relay && npm install && npx wrangler login && npx wrangler deploy
+name = "drawory-relay"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+# SQLite-backed Durable Objects are what the free plan offers. The relay stores nothing.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
+
+[vars]
+# Sites allowed to connect. Add your own domain here if you get one.
+ALLOWED_ORIGINS = "https://drawory.vercel.app,http://localhost:3000"
+# Rooms are checked against this site, so codes nobody created are refused.
+APP_URL = "https://drawory.vercel.app"

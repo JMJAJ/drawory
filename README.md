@@ -62,14 +62,32 @@ On your home Wi-Fi you can use it from your phone without hosting it anywhere: r
 
 ## Deploying
 
-Any Node host that runs `npm run build` and `npm run start` works, as long as it keeps a server running (that's what the WebSocket relay needs).
+### Free and always on (recommended): Vercel + Cloudflare relay + Neon
+
+| Piece | Where | Cost |
+| --- | --- | --- |
+| The site | Vercel (`drawory.vercel.app`) | Free |
+| Live relay (cursors, live activity) | Cloudflare Worker in `relay/` (`drawory-relay.drawory-relay.workers.dev`) | Free plan, Durable Objects |
+| Data and Realtime | Neon | Free plan |
+
+1. **Relay**: `cd relay && npm install && npx wrangler login && npx wrangler deploy`. Allowed sites and the site address are in `relay/wrangler.toml`.
+2. **Vercel environment variables** (Project → Settings → Environment Variables), then redeploy:
+   - `DATABASE_URL`, `NEON_REALTIME_SECRET`, `AUTH_SECRET`: same values as `.env.local`.
+   - `NEXT_PUBLIC_NEON_REALTIME_URL`: the actual URL (copy `NEON_REALTIME_URL`'s value; Vercel doesn't expand `$NAME`).
+   - `NEXT_PUBLIC_RELAY_URL` = `wss://drawory-relay.drawory-relay.workers.dev`
+   - Remove `APP_PASSCODE` so room codes are enough to join.
+3. **Neon Realtime** already allows `https://drawory.vercel.app` (it's in `neon.ts`).
+
+Free-plan headroom: Cloudflare counts about 20 relay messages as one request, 100,000 requests a day, so roughly 2 million live updates a day (many hours of several people drawing). If it's ever exceeded, the board falls back to the database path until the daily reset. Vercel's 4.5 MB request limit caps video and voice uploads there.
+
+### Self-hosted
+
+Any Node host that runs `npm run build` and `npm run start` works, as long as it keeps a server running; `server.mjs` then serves the relay itself on `/ws` (leave `NEXT_PUBLIC_RELAY_URL` unset).
 
 **Free options**
 - **Your own computer**: `npm run build && npm run start`. On the same Wi-Fi, others open `http://<your computer's IP>:3000`. From anywhere, put a free tunnel in front, e.g. `cloudflared tunnel --url http://localhost:3000` (WebSockets work through it).
 - **Render free web service**: connect the GitHub repo, build command `npm install && npm run build`, start command `npm run start`, add the environment variables. WebSockets work. Free instances sleep after 15 minutes without visitors and take ~1 minute to wake on the next visit.
 - The database stays on Neon's free plan either way.
-
-Vercel also works but has no WebSockets, so cursors and live activity go through the database (slower), and its 4.5 MB request limit cuts off bigger video and voice uploads.
 
 1. Set the environment variables above on the host. `NEXT_PUBLIC_NEON_REALTIME_URL` must be there at build time.
 2. Run `npm run db:migrate` once against the database (safe to re-run).
