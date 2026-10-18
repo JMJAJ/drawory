@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Caveat, Geist, Geist_Mono, Permanent_Marker, Playfair_Display } from "next/font/google";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -12,9 +12,14 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+// Text fonts on the board (see FONTS in lib/client/elements.ts). Only downloaded when used.
+const elegant = Playfair_Display({ variable: "--font-elegant", subsets: ["latin"], preload: false });
+const hand = Caveat({ variable: "--font-hand", subsets: ["latin"], preload: false });
+const marker = Permanent_Marker({ variable: "--font-marker", subsets: ["latin"], weight: "400", preload: false });
+
 export const metadata: Metadata = {
   title: "drawory",
-  description: "An endless canvas for the two of you.",
+  description: "An endless canvas you draw on together. Make a room, share the code.",
   appleWebApp: { capable: true, title: "drawory", statusBarStyle: "default" },
 };
 
@@ -35,7 +40,7 @@ const themeScript = `try{var t=localStorage.getItem("drawory:theme");if(t==="lig
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`} suppressHydrationWarning>
+    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} ${elegant.variable} ${hand.variable} ${marker.variable}`} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>

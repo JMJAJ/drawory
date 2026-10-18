@@ -1,4 +1,4 @@
-import { ensureBoard } from "@/lib/server/db";
+import { requireBoard } from "@/lib/server/db";
 import { boardIdFrom, handler, HttpError } from "@/lib/server/http";
 import { LIVE_QUERY_NAMES } from "@/lib/server/queries";
 import { sealBoardQuery } from "@/lib/server/realtime";
@@ -12,7 +12,7 @@ export const POST = handler<Ctx>(async (req, { params }) => {
   const body = await req.json().catch(() => ({}));
   const name = body?.query as LiveQueryName;
   if (!LIVE_QUERY_NAMES.includes(name)) throw new HttpError(400, "Unknown live query");
-  await ensureBoard(boardId);
+  await requireBoard(boardId);
   return Response.json(await sealBoardQuery(boardId, name), {
     headers: { "Cache-Control": "no-store" },
   });

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon, type IconName } from "@/components/icons";
 import { api, ApiError } from "@/lib/client/api";
@@ -15,12 +16,14 @@ import {
   STROKE_COLORS,
   STROKE_SIZES,
   STYLABLE,
+  FONTS,
   unionBounds,
   type Camera,
 } from "@/lib/client/elements";
+import { displayCode, inviteLink, rememberRoom } from "@/lib/client/rooms";
 import { initials, textOn, type Me } from "@/lib/client/identity";
 import { audioPeaks, detectLink, fitWithin, imageSize, shrinkPhoto, videoSize, type DetectedLink } from "@/lib/client/media";
-import type { BoardMeta, ElementData, ElementRow, ElementType, PresenceRow } from "@/lib/types";
+import type { Activity, BoardMeta, ElementData, ElementRow, ElementType, PresenceRow } from "@/lib/types";
 import { BoardContext, type BoardCtx, type YtCommand } from "./context";
 import {
   AddMediaDialog,
@@ -31,7 +34,8 @@ import {
   SetupDialog,
   VoiceDialog,
 } from "./Dialogs";
-import { ElementView, StrokeSvg } from "./ElementView";
+import { ElementView, StrokeSvg, type RemoteMark } from "./ElementView";
+import { RemoteCursor } from "./RemoteCursor";
 import { MemoryLane } from "./MemoryLane";
 import { StickerTray } from "./StickerTray";
 import { useBoardSync, type SyncStatus } from "./sync";
@@ -159,6 +163,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   const [tool, setTool] = useState<Tool>(() => (matchMedia("(pointer: coarse)").matches && !matchMedia("(pointer: fine)").matches ? "select" : "pen"));
   const [colorId, setColorId] = useState("ink");
   const [sizeId, setSizeId] = useState(2);
+  const [fontId, setFontId] = useState<string>("clean");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   // Single-item helpers; the toolbar, editing and resizing work on one item.
@@ -249,7 +254,10 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   }
 
   const loadBoard = useCallback(() => {
-    api.board(boardId).then(setBoard, () => {});
+    api.board(boardId).then((b) => {
+      setBoard(b);
+      rememberRoom(boardId, b.name);
+    }, () => {});
   }, [boardId]);
   useEffect(loadBoard, [loadBoard]);
 
@@ -435,8 +443,19 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     toolRef.current = tool;
     watchingRef.current = watching;
   }, [tool, watching]);
+  // What I'm doing right now (see Activity). Others render it live in my color.
+  const activityRef = useRef<Activity | null>(null);
+  const presenceInflight = useRef(false);
+  const presencePending = useRef(false);
+  const pushPresenceRef = useRef<(hidden?: boolean, leaving?: boolean) => void>(() => {});
   const pushPresence = useCallback(
     (hidden = false, leaving = false) => {
+      // One update in flight at a time; the latest state goes out as soon as it lands.
+      if (presenceInflight.current && !hidden && !leaving) {
+        presencePending.current = true;
+        return;
+      }
+      presenceInflight.current = true;
       const c = cam.current;
       const sentAt = Date.now();
       void api
@@ -453,6 +472,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
           zoom: c.zoom,
           tool: toolRef.current,
           watching: watchingRef.current,
+          activity: hidden ? null : activityRef.current,
         }, leaving)
         .then((res) => {
           const rtt = Date.now() - sentAt;
@@ -463,13 +483,25 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
           clockOffset.current = offset;
           if (jump) setNow(Date.now() + offset);
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => {
+          presenceInflight.current = false;
+          if (presencePending.current) {
+            presencePending.current = false;
+            pushPresenceRef.current();
+          }
+        });
     },
     [boardId, me],
   );
+  useEffect(() => {
+    pushPresenceRef.current = pushPresence;
+  }, [pushPresence]);
   const schedulePresence = useCallback(() => {
     if (presenceTimer.current) return;
-    const wait = Math.max(0, 90 - (Date.now() - lastPresence.current));
+    // While actively drawing/dragging/typing, update faster so others see it smoothly.
+    const busy = activityRef.current && activityRef.current.k !== "select";
+    const wait = Math.max(0, (busy ? 40 : 70) - (Date.now() - lastPresence.current));
     presenceTimer.current = setTimeout(() => {
       presenceTimer.current = null;
       lastPresence.current = Date.now();
@@ -490,6 +522,43 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     };
   }, [pushPresence]);
   useEffect(schedulePresence, [camera, tool, watching, schedulePresence]);
+
+  // Activity: set while a gesture runs, then back to "what I have selected" shortly after it
+  // ends (long enough for the saved result to reach everyone, so nothing flickers).
+  const activityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const selectedIdsRef = useRef<string[]>([]);
+  const idleActivity = (): Activity | null => {
+    const ids = selectedIdsRef.current;
+    return ids.length ? { k: "select", ids: ids.slice(0, 100) } : null;
+  };
+  const setActivity = useCallback(
+    (a: Activity) => {
+      if (activityTimer.current) clearTimeout(activityTimer.current);
+      activityTimer.current = null;
+      activityRef.current = a;
+      schedulePresence();
+    },
+    [schedulePresence],
+  );
+  const endActivity = useCallback(
+    (delay = 600) => {
+      if (activityTimer.current) clearTimeout(activityTimer.current);
+      activityTimer.current = setTimeout(() => {
+        activityTimer.current = null;
+        activityRef.current = idleActivity();
+        schedulePresence();
+      }, delay);
+    },
+    [schedulePresence],
+  );
+  useEffect(() => {
+    selectedIdsRef.current = selectedIds;
+    const a = activityRef.current;
+    if (!a || a.k === "select") {
+      activityRef.current = idleActivity();
+      schedulePresence();
+    }
+  }, [selectedIds, schedulePresence]);
 
   // Everyone else who has ever opened this board, most recently active first.
   const others = useMemo(
@@ -589,14 +658,14 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       if (seenSignals.current.has(s.id)) continue;
       seenSignals.current.add(s.id);
       if (s.from_user === me.id) continue;
-      if (s.kind === "heart") {
+      if (s.kind === "wave" || s.kind === "heart") {
         const p = othersRef.current.find((o) => o.user_id === s.from_user);
         const c = cam.current;
         const visible = p?.cursor_x != null && p.cursor_y != null;
         const x = visible ? p!.cursor_x! * c.zoom + c.x : window.innerWidth - 220;
         const y = visible ? p!.cursor_y! * c.zoom + c.y : 90;
         spawnHearts(Math.min(Math.max(x, 40), window.innerWidth - 40), Math.min(Math.max(y, 120), window.innerHeight - 40));
-        showToast(`${p?.name ?? "Someone"} sent you a heart`, true);
+        showToast(`${p?.name ?? "Someone"} waved at you`, true);
       } else if (s.kind === "yt") {
         const payload = s.payload as { elementId?: string } & YtCommand;
         if (payload.elementId) ytHandlers.current.get(payload.elementId)?.forEach((h) => h(payload));
@@ -606,10 +675,20 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     }
   }, [sync.signals, me.id, spawnHearts, showToast, loadBoard]);
 
-  function sendHeart(e: React.MouseEvent<HTMLButtonElement>) {
+  function sendWave(e: React.MouseEvent<HTMLButtonElement>) {
     const r = e.currentTarget.getBoundingClientRect();
     spawnHearts(r.left + r.width / 2, r.top + r.height);
-    void api.signal(boardId, "heart", me.id).catch(() => showToast("Couldn't send the heart"));
+    void api.signal(boardId, "wave", me.id).catch(() => showToast("Couldn't send the wave"));
+  }
+
+  async function copyInvite() {
+    const link = inviteLink(boardId);
+    try {
+      await navigator.clipboard.writeText(link);
+      showToast(`Invite link copied · code ${displayCode(boardId)}`);
+    } catch {
+      window.prompt("Copy this invite link", link);
+    }
   }
 
   /* ---------- Adding things ---------- */
@@ -746,14 +825,18 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         g.originals.set(id, committedRef.current.get(id) ?? row);
         hits.push({ id, row: null });
       }
-      if (hits.length) preview(hits);
+      if (hits.length) {
+        preview(hits);
+        setActivity({ k: "erase", ids: [...g.originals.keys()].slice(0, 200) });
+      }
     },
-    [preview],
+    [preview, setActivity],
   );
 
   /** Abandons a gesture without saving it, putting back anything it was previewing. */
   function cancelGesture(g: Gesture | null) {
     setDraft(null);
+    endActivity(0);
     if (!g) return;
     if (g.kind === "pan" && g.hold) clearTimeout(g.hold);
     if (g.kind === "move" && g.moved) g.originals.forEach((r) => dropPreview(r.id));
@@ -763,6 +846,13 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       setMarquee(null);
       setSelectedIds(g.base);
     }
+  }
+
+  /** Shares a stroke in progress. Long ones are thinned so the update stays small. */
+  function shareStroke(points: number[][]) {
+    const step = Math.ceil(points.length / 400);
+    const pts = points.filter((_, i) => i % step === 0 || i === points.length - 1).map(([x, y]) => [Math.round(x), Math.round(y)]);
+    setActivity({ k: "draw", pts, c: colorId, s: STROKE_SIZES.find((s) => s.id === sizeId)?.px ?? 6 });
   }
 
   function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
@@ -880,6 +970,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         const pressure = e.pointerType === "pen" ? e.pressure || 0.5 : 0.5;
         gesture.current = { kind: "draw", points: [[w.x, w.y, pressure]] };
         setDraft(makeRow("stroke", strokeData([[w.x, w.y, pressure]]), nextZ(), me.id));
+        shareStroke([[w.x, w.y]]);
         return;
       }
       case "eraser": {
@@ -901,9 +992,10 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
           return;
         }
         const size = TEXT_SIZES[sizeId - 1] ?? 28;
-        const row = makeRow("text", { x: w.x, y: w.y - size * 0.7, text: "", size, color: colorId }, nextZ(), me.id);
+        const row = makeRow("text", { x: w.x, y: w.y - size * 0.7, text: "", size, color: colorId, font: fontId }, nextZ(), me.id);
         preview([{ id: row.id, row }]);
         setEditingId(row.id);
+        setActivity({ k: "typing", id: row.id, text: "", d: row.data });
         return;
       }
       case "note": {
@@ -950,6 +1042,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         if (Math.hypot(w.x - last[0], w.y - last[1]) * cam.current.zoom < 1.5) break;
         g.points.push([w.x, w.y, e.pointerType === "pen" ? e.pressure || 0.5 : 0.5]);
         if (draftRef.current) setDraft({ ...draftRef.current, data: strokeData(g.points) });
+        shareStroke(g.points);
         break;
       }
       case "shape": {
@@ -961,23 +1054,22 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
           dy = Math.sign(dy || 1) * s;
         }
         const width = SHAPE_WIDTHS[sizeId - 1] ?? 3.5;
+        let shapeRow: ElementRow;
         if (g.type === "arrow") {
           const pad = 20;
           const x = Math.min(g.ox, g.ox + dx) - pad;
           const y = Math.min(g.oy, g.oy + dy) - pad;
-          setDraft(
-            makeRow("arrow", {
-              x, y, w: Math.abs(dx) + pad * 2, h: Math.abs(dy) + pad * 2, color: colorId, size: width,
-              points: [[g.ox - x, g.oy - y], [g.ox + dx - x, g.oy + dy - y]],
-            }, nextZ(), me.id),
-          );
+          shapeRow = makeRow("arrow", {
+            x, y, w: Math.abs(dx) + pad * 2, h: Math.abs(dy) + pad * 2, color: colorId, size: width,
+            points: [[g.ox - x, g.oy - y], [g.ox + dx - x, g.oy + dy - y]],
+          }, nextZ(), me.id);
         } else {
-          setDraft(
-            makeRow(g.type, {
-              x: Math.min(g.ox, g.ox + dx), y: Math.min(g.oy, g.oy + dy), w: Math.abs(dx), h: Math.abs(dy), color: colorId, size: width,
-            }, nextZ(), me.id),
-          );
+          shapeRow = makeRow(g.type, {
+            x: Math.min(g.ox, g.ox + dx), y: Math.min(g.oy, g.oy + dy), w: Math.abs(dx), h: Math.abs(dy), color: colorId, size: width,
+          }, nextZ(), me.id);
         }
+        setDraft(shapeRow);
+        setActivity({ k: "shape", t: g.type, d: shapeRow.data });
         break;
       }
       case "move": {
@@ -986,6 +1078,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         if (!g.moved && Math.hypot(dx, dy) * cam.current.zoom < 3) break;
         g.moved = true;
         preview(g.originals.map((r) => ({ id: r.id, row: { ...r, data: { ...r.data, x: Math.round(r.data.x + dx), y: Math.round(r.data.y + dy) } } })));
+        setActivity({ k: "move", items: g.originals.slice(0, 150).map((r) => [r.id, Math.round(r.data.x + dx), Math.round(r.data.y + dy)]) });
         break;
       }
       case "resize": {
@@ -1005,6 +1098,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
           data.h = Math.round(nh);
         }
         preview([{ id: r.id, row: { ...r, data: { ...r.data, ...data } } }]);
+        setActivity({ k: "resize", id: r.id, d: data });
         break;
       }
       case "erase":
@@ -1014,6 +1108,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         const box = { x: Math.min(g.wx, w.x), y: Math.min(g.wy, w.y), w: Math.abs(w.x - g.wx), h: Math.abs(w.y - g.wy) };
         if (box.w * cam.current.zoom < 3 && box.h * cam.current.zoom < 3) break;
         setMarquee(box);
+        setActivity({ k: "marquee", b: [Math.round(box.x), Math.round(box.y), Math.round(box.w), Math.round(box.h)] });
         const hit: string[] = [];
         for (const r of rowsRef.current.values()) {
           const b = bounds(r);
@@ -1047,6 +1142,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         if (Math.hypot(end.x - last[0], end.y - last[1]) > 0.5) g.points.push([end.x, end.y, last[2]]);
         if (g.points.length === 1) g.points.push([g.points[0][0] + 0.1, g.points[0][1] + 0.1, 0.5]);
         addRow("stroke", strokeData(g.points), false);
+        endActivity();
         break;
       }
       case "shape": {
@@ -1054,6 +1150,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         setDraft(null);
         const big = d && (d.type === "arrow" ? Math.hypot(d.data.w ?? 0, d.data.h ?? 0) > 50 : (d.data.w ?? 0) > 6 && (d.data.h ?? 0) > 6);
         if (d && big) void send([{ before: null, after: { ...d, id: newId() } }]);
+        endActivity(big ? 600 : 0);
         break;
       }
       case "move":
@@ -1061,18 +1158,22 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
           void send(
             g.originals.map((r) => ({ before: committedRef.current.get(r.id) ?? r, after: rowsRef.current.get(r.id) ?? r })),
           );
+          endActivity();
         }
         break;
       case "resize": {
         const after = rowsRef.current.get(g.original.id);
         if (after) void send([{ before: committedRef.current.get(after.id) ?? g.original, after }]);
+        endActivity();
         break;
       }
       case "erase":
         if (g.originals.size) void send([...g.originals.values()].map((r) => ({ before: r, after: null })));
+        endActivity();
         break;
       case "marquee":
         setMarquee(null);
+        endActivity(0);
         break;
     }
   }
@@ -1156,7 +1257,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       if (link) addLink(link).catch((err) => showToast(err.message));
       else {
         const size = TEXT_SIZES[sizeId - 1] ?? 28;
-        addRow("text", { ...placeNear(text.length * size * 0.5, size), text: text.slice(0, 5000), size, color: colorId });
+        addRow("text", { ...placeNear(text.length * size * 0.5, size), text: text.slice(0, 5000), size, color: colorId, font: fontId });
       }
     };
     window.addEventListener("keydown", onKey);
@@ -1189,10 +1290,18 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       map.get(elementId)?.delete(handler);
     };
   }, []);
+  const reportTyping = useCallback(
+    (id: string, text: string) => {
+      const row = rowsRef.current.get(id);
+      if (row) setActivity({ k: "typing", id, text: text.slice(0, 3000), d: row.data });
+    },
+    [setActivity],
+  );
   const finishText = useCallback(
     (id: string, text: string) => {
       if (editingRef.current !== id) return; // already finished
       setEditingId(null);
+      endActivity();
       const row = rowsRef.current.get(id);
       if (!row) return;
       const clean = text.replace(/\n+$/, "");
@@ -1205,7 +1314,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       if (before?.data.text === clean) return;
       void send([{ before, after: { ...row, data: { ...row.data, text: clean } } }]);
     },
-    [send, dropPreview, setEditingId],
+    [send, dropPreview, setEditingId, endActivity],
   );
   const ctx: BoardCtx = useMemo(
     () => ({
@@ -1217,6 +1326,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       serverNow,
       patch,
       finishText,
+      reportTyping,
       stopEditing: () => setEditingId(null),
       sendYt,
       onYt,
@@ -1224,11 +1334,83 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       openCapsule: (id) => setDialog({ kind: "capsuleOpen", id, title: rowsRef.current.get(id)?.data.title || "Time capsule" }),
       addToCapsule: (id) => setDialog({ kind: "capsuleNote", id }),
     }),
-    [boardId, me, laneOpen, camera.zoom, watchers, serverNow, patch, finishText, sendYt, onYt, setEditingId],
+    [boardId, me, laneOpen, camera.zoom, watchers, serverNow, patch, finishText, reportTyping, sendYt, onYt, setEditingId],
   );
 
+  /* ---------- Others' live activity ---------- */
+  const remote = useMemo(() => {
+    const override = new Map<string, Partial<ElementData>>();
+    const marks = new Map<string, RemoteMark>();
+    const drafts: { key: string; row: ElementRow; color: string }[] = [];
+    const boxes: { key: string; b: [number, number, number, number]; color: string }[] = [];
+    const selections: { key: string; ids: string[]; color: string; name: string }[] = [];
+    const fake = (id: string, type: ElementType, data: ElementData): ElementRow => ({
+      id, type, data, z: 1e6, created_by: null, created_at: new Date(0), updated_at: new Date(0),
+    });
+    for (const p of online) {
+      const a = p.activity;
+      if (!a) continue;
+      const who = { color: p.color, name: p.name };
+      switch (a.k) {
+        case "select":
+          selections.push({ key: p.user_id, ids: a.ids, ...who });
+          break;
+        case "marquee":
+          boxes.push({ key: p.user_id, b: a.b, color: p.color });
+          break;
+        case "draw":
+          if (a.pts?.length) {
+            drafts.push({ key: p.user_id, color: p.color, row: fake(`live-${p.user_id}`, "stroke", { ...normalizePoints(a.pts, a.s), size: a.s, color: a.c }) });
+          }
+          break;
+        case "shape":
+          drafts.push({ key: p.user_id, color: p.color, row: fake(`live-${p.user_id}`, a.t, a.d) });
+          break;
+        case "move":
+          for (const [id, x, y] of a.items) {
+            override.set(id, { x, y });
+            marks.set(id, { ...who, mode: "live" });
+          }
+          break;
+        case "resize":
+          override.set(a.id, a.d);
+          marks.set(a.id, { ...who, mode: "live" });
+          break;
+        case "erase":
+          for (const id of a.ids) marks.set(id, { ...who, mode: "erasing" });
+          break;
+        case "typing":
+          if (rowsById.has(a.id)) override.set(a.id, { text: a.text });
+          else drafts.push({ key: p.user_id, color: p.color, row: fake(a.id, "text", { ...a.d, text: a.text }) });
+          marks.set(a.id, { ...who, mode: "typing" });
+          break;
+      }
+    }
+    return { override, marks, drafts, boxes, selections };
+  }, [online, rowsById]);
+
+  const ACTIVITY_VERB: Record<Activity["k"], string> = {
+    select: "",
+    marquee: " · selecting",
+    draw: " · drawing",
+    shape: " · drawing",
+    move: " · moving",
+    resize: " · resizing",
+    typing: " · typing",
+    erase: " · erasing",
+  };
+
   /* ---------- Render ---------- */
-  const displayRows = laneOpen ? laneRows ?? [] : rows;
+  // Others' drags and typing show on top of the saved rows (my own changes win).
+  const liveRows = remote.override.size
+    ? rows.map((r) => {
+        const o = remote.override.get(r.id);
+        return o && !overlay.has(r.id) ? { ...r, data: { ...r.data, ...o } } : r;
+      })
+    : rows;
+  const displayRows = laneOpen ? laneRows ?? [] : liveRows;
+  // Where things are on screen right now, including others' drags (for their selection outlines).
+  const liveById = liveRows === rows ? rowsById : new Map(liveRows.map((r) => [r.id, r]));
   const placesLayer = displayRows.filter((r) => r.type === "place");
   const contentLayer = displayRows.filter((r) => r.type !== "place");
   const selectedRows = laneOpen ? [] : selectedIds.map((id) => rowsById.get(id)).filter((r): r is ElementRow => !!r);
@@ -1236,20 +1418,22 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   const stylable = selectedRows.filter((r) => STYLABLE.includes(r.type));
   const showStyle = !laneOpen && (DRAW_TOOLS.includes(tool) || (tool === "select" && stylable.length > 0));
   const activeColor = tool === "select" && stylable[0]?.data.color ? stylable[0].data.color : colorId;
+  const selectedTexts = selectedRows.filter((r) => r.type === "text");
+  const showFonts = !laneOpen && (tool === "text" || (tool === "select" && selectedTexts.length > 0));
+  const activeFont = tool === "select" && selectedTexts[0] ? selectedTexts[0].data.font ?? "clean" : fontId;
   const status = sync.status;
-  const togetherDays = board?.together_since
-    ? Math.floor((now - new Date(`${board.together_since}T00:00:00`).getTime()) / 86_400_000) + 1
-    : null;
   const selBox = selectedRows.length ? unionBounds(selectedRows) : null;
   const iLike = selectedRows.length > 0 && selectedRows.every((r) => r.data.likes?.includes(me.id));
 
-  function applyStyle(next: { color?: string; size?: number }) {
+  function applyStyle(next: { color?: string; size?: number; font?: string }) {
     if (next.color) setColorId(next.color);
     if (next.size) setSizeId(next.size);
+    if (next.font) setFontId(next.font);
     if (tool !== "select" || !stylable.length) return;
     const changes = stylable.flatMap((r) => {
       const data: Partial<ElementData> = {};
       if (next.color) data.color = next.color;
+      if (next.font && r.type === "text") data.font = next.font;
       if (next.size) {
         if (r.type === "text") data.size = TEXT_SIZES[next.size - 1];
         else if (r.type !== "stroke") data.size = SHAPE_WIDTHS[next.size - 1]; // stroke width is baked into its shape
@@ -1322,8 +1506,50 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
               solo={r.id === selectedId}
               editing={r.id === editingId && !laneOpen}
               likes={r.data.likes?.length ?? 0}
+              remote={laneOpen ? undefined : remote.marks.get(r.id)}
             />
           ))}
+          {!laneOpen && (
+            <div className="remote-layer" aria-hidden="true">
+              {remote.selections.flatMap((s) =>
+                s.ids.slice(0, 60).flatMap((id, i) => {
+                  const r = liveById.get(id);
+                  if (!r) return [];
+                  const b = bounds(r);
+                  const pad = 6 / camera.zoom;
+                  return [
+                    <div
+                      key={`${s.key}-${id}`}
+                      className="remote-sel"
+                      style={{ left: b.x - pad, top: b.y - pad, width: b.w + pad * 2, height: b.h + pad * 2, borderWidth: 1.5 / camera.zoom, ["--rc" as string]: s.color }}
+                    >
+                      {i === 0 && (
+                        <span className="remote-sel-name" style={{ background: s.color, color: textOn(s.color), transform: `scale(${1 / camera.zoom})` }}>
+                          {s.name}
+                        </span>
+                      )}
+                    </div>,
+                  ];
+                }),
+              )}
+              {remote.boxes.map((m) => (
+                <div
+                  key={m.key}
+                  className="remote-marquee"
+                  style={{ left: m.b[0], top: m.b[1], width: m.b[2], height: m.b[3], borderWidth: 1.5 / camera.zoom, ["--rc" as string]: m.color }}
+                />
+              ))}
+              {remote.drafts.map((d) =>
+                d.row.type === "stroke" ? (
+                  <div key={d.key} className="el el-stroke remote-draft" style={{ left: d.row.data.x, top: d.row.data.y, width: d.row.data.w, height: d.row.data.h }}>
+                    <StrokeSvg row={d.row} />
+                  </div>
+                ) : (
+                  <ElementView key={d.key} row={d.row} selected={false} editing={false} likes={0} remote={d.row.type === "text" ? remote.marks.get(d.row.id) : undefined} />
+                ),
+              )}
+            </div>
+          )}
           {draft?.type === "stroke" && (
             <div className="el el-stroke" style={{ left: draft.data.x, top: draft.data.y, width: draft.data.w, height: draft.data.h, zIndex: 999999 }}>
               <StrokeSvg row={draft} />
@@ -1345,15 +1571,14 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
           {!laneOpen &&
             online.map((p) =>
               p.cursor_x == null || p.cursor_y == null ? null : (
-                <div key={p.user_id} className="cursor" style={{ transform: `translate(${p.cursor_x}px, ${p.cursor_y}px) scale(${1 / camera.zoom})` }}>
-                  <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M4 3l7 18 2.6-7.4L21 11z" fill={p.color} stroke="var(--surface)" strokeWidth="1.5" strokeLinejoin="round" />
-                  </svg>
-                  <div className="cursor-label" style={{ background: p.color, color: textOn(p.color) }}>
-                    {p.name}
-                    {p.tool === "pen" ? " · drawing" : p.tool === "eraser" ? " · erasing" : ""}
-                  </div>
-                </div>
+                <RemoteCursor
+                  key={p.user_id}
+                  x={p.cursor_x}
+                  y={p.cursor_y}
+                  zoom={camera.zoom}
+                  color={p.color}
+                  label={`${p.name}${p.activity ? ACTIVITY_VERB[p.activity.k] : ""}`}
+                />
               ),
             )}
         </div>
@@ -1391,7 +1616,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
             className="heart-float"
             style={{ left: h.x - 11, top: h.y - 11, animationDelay: `${h.delay}ms`, ["--dx" as string]: `${h.dx}px` }}
           >
-            <Icon name="heart" size={22} filled />
+            <Icon name="wave" size={24} />
           </div>
         ))}
       </div>
@@ -1470,9 +1695,14 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
                 </button>
                 <div className="brand">
                   <span className="brand-mark" aria-hidden="true" />
-                  <span>{board?.name && board.name !== "Our universe" ? board.name : "drawory"}</span>
+                  <span className="room-name">{board?.name || "Untitled room"}</span>
                 </div>
               </div>
+              <button type="button" className="pill code-chip" onClick={copyInvite} title="Copy the invite link" aria-label={`Room code ${displayCode(boardId)}. Copy the invite link`}>
+                <span className="code-label">Code</span>
+                <span className="mono">{displayCode(boardId)}</span>
+                <Icon name="link" size={16} />
+              </button>
               <nav className="pill places" aria-label="Places">
                 <button type="button" className="place-btn" aria-current={!myPlace} onClick={fitAll}>
                   All
@@ -1500,7 +1730,6 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
                   <span className="avatar" title={`${me.name} (you)`} style={{ background: me.color, color: textOn(me.color) }}>
                     {initials(me.name)}
                   </span>
-                  <Icon name="heart" size={12} filled style={{ color: "var(--accent)" }} />
                   {online.length > 0 ? (
                     <div className="people">
                       {online.slice(0, 4).map((p) => (
@@ -1538,12 +1767,12 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
                           : `${online[0].name} is here`
                         : partner
                           ? `${partner.name} was here ${relativeTime(partner.updated_at, now)}`
-                          : "Waiting for your person"}
+                          : "Just you so far"}
                   </strong>
-                  <span>{togetherDays ? `day ${togetherDays} of us` : "set your day one in the menu"}</span>
+                  <span>{online.length ? `${online.length + 1} in this room` : `Share code ${displayCode(boardId)} to invite`}</span>
                 </div>
-                <button type="button" className="icon-btn heart-btn" aria-label={online.length > 1 ? "Send everyone a heart" : `Send ${partner?.name ?? "them"} a heart`} title="Send a heart" onClick={sendHeart}>
-                  <Icon name="heart" filled />
+                <button type="button" className="icon-btn heart-btn" aria-label="Wave at everyone in the room" title="Wave" onClick={sendWave}>
+                  <Icon name="wave" />
                 </button>
                 <button
                   type="button"
@@ -1571,7 +1800,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
 
           {menuOpen && (
             <div className="menu-panel surface">
-              <h3>Board</h3>
+              <h3>Room</h3>
               <div>
                 <label className="field-label" htmlFor="board-name">
                   Name
@@ -1589,35 +1818,21 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
                 />
               </div>
               <div>
-                <label className="field-label" htmlFor="board-since">
-                  Together since
-                </label>
-                <input
-                  id="board-since"
-                  className="input"
-                  type="date"
-                  defaultValue={board?.together_since ?? ""}
-                  key={board?.together_since ?? "none"}
-                  max={new Date().toISOString().slice(0, 10)}
-                  onChange={(e) =>
-                    api.updateBoard(boardId, { together_since: e.target.value || null, from: me.id }).then(setBoard, () => showToast("Couldn't save the date"))
-                  }
-                />
+                <span className="field-label">Invite code</span>
+                <button type="button" className="btn code-big" onClick={copyInvite}>
+                  <span className="mono">{displayCode(boardId)}</span>
+                  <span className="muted">Copy link</span>
+                </button>
               </div>
+              <Link className="btn" href="/" style={{ justifyContent: "flex-start" }}>
+                <Icon name="back" size={18} /> All rooms
+              </Link>
               <h3>You</h3>
               <button type="button" className="btn" style={{ justifyContent: "flex-start" }} onClick={() => setDialog({ kind: "me" })}>
                 <span className="avatar" style={{ background: me.color, width: 26, height: 26 }}>
                   {initials(me.name)}
                 </span>
                 {me.name} · change
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost"
-                style={{ justifyContent: "flex-start", color: "var(--muted)" }}
-                onClick={() => api.logout().then(() => (window.location.href = "/login"))}
-              >
-                Sign out on this device
               </button>
               <p className="muted" style={{ margin: 0, fontSize: 12 }}>
                 Shortcuts: V select · H pan · P draw · E erase · T text · N list · Space+drag pan · Ctrl+Z undo
@@ -1676,6 +1891,27 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
                       <span style={{ height: s.id * 2 }} />
                     </button>
                   ))}
+                  {showFonts && (
+                    <>
+                      <div className="ctrl-sep" />
+                      <div className="font-group" role="group" aria-label="Font">
+                        {FONTS.map((f) => (
+                          <button
+                            key={f.id}
+                            type="button"
+                            className="font-btn"
+                            aria-label={`${f.label} font`}
+                            title={f.label}
+                            aria-pressed={activeFont === f.id}
+                            style={{ fontFamily: f.css }}
+                            onClick={() => applyStyle({ font: f.id })}
+                          >
+                            Aa
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
               <div className="dock" role="toolbar" aria-label="Tools">
@@ -1716,7 +1952,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
               </button>
               <button type="button" className="lane-btn" onClick={() => setLaneOpen(true)}>
                 <Icon name="history" size={18} />
-                <span>Memory lane</span>
+                <span>Replay</span>
               </button>
             </div>
           </div>
@@ -1725,7 +1961,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
 
       {toast && (
         <div className="toast" role="status" key={toast.id}>
-          {toast.heart && <Icon name="heart" size={16} filled style={{ color: "var(--accent)" }} />}
+          {toast.heart && <Icon name="wave" size={18} style={{ color: "var(--accent)" }} />}
           {toast.text}
         </div>
       )}

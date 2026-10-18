@@ -53,7 +53,7 @@ create table if not exists presence (
   primary key (board_id, user_id)
 );
 
--- Short-lived nudges: hearts, synced video play/pause, board setting changes.
+-- Short-lived nudges: waves, synced video play/pause, board setting changes.
 create table if not exists signals (
   id         bigserial primary key,
   board_id   text not null references boards(id) on delete cascade,
@@ -100,3 +100,10 @@ create table if not exists sticker_cache (
   bytes      bytea not null,
   created_at timestamptz not null default now()
 );
+
+-- Rooms: a board's id is its join code. Who made it, for "your rooms".
+alter table boards add column if not exists created_by text;
+
+-- What each person is doing right now (selection box, stroke in progress, dragging, typing),
+-- so everyone else can watch it happen live. Cleared when they finish.
+alter table presence add column if not exists activity jsonb;

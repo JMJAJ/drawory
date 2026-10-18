@@ -1,5 +1,6 @@
 import "server-only";
 import { Pool } from "pg";
+import { HttpError } from "@/lib/server/http";
 
 declare global {
   var __draworyPool: Pool | undefined;
@@ -21,6 +22,8 @@ function createPool() {
 // Reuse one pool across hot reloads in development.
 export const pool: Pool = globalThis.__draworyPool ?? (globalThis.__draworyPool = createPool());
 
-export async function ensureBoard(boardId: string) {
-  await pool.query("insert into boards (id) values ($1) on conflict (id) do nothing", [boardId]);
+/** Rooms are only made through POST /api/rooms; a code nobody created is a 404, never a new room. */
+export async function requireBoard(boardId: string) {
+  const { rowCount } = await pool.query("select 1 from boards where id = $1", [boardId]);
+  if (!rowCount) throw new HttpError(404, "There's no room with that code");
 }

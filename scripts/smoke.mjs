@@ -1,10 +1,10 @@
 // End-to-end check against a running app: npm run start, then npm run test:smoke
-// Uses a throwaway board ("smoke-test") and deletes it afterwards.
+// Creates a throwaway room and deletes it afterwards.
 import { createRealtimeClient } from "@neon/realtime/client";
 import pg from "pg";
 
 const BASE = process.env.SMOKE_URL ?? "http://localhost:3000";
-const BOARD = "smoke-test";
+let BOARD = "";
 let cookie = "";
 let failures = 0;
 
@@ -30,16 +30,29 @@ const waitFor = async (fn, ms = 10_000) => {
   return false;
 };
 
-// 1. Auth
-const anon = await call(`/api/boards/${BOARD}/live`, json({ query: "elements" }));
-check("API refuses requests without the passcode cookie", anon.status === 401, `status ${anon.status}`);
-const page = await call(`/b/${BOARD}`, { redirect: "manual" });
-check("Board page redirects to /login when signed out", page.status === 307 && page.headers.get("location")?.includes("/login"), `status ${page.status}`);
-const bad = await call("/api/login", json({ passcode: "wrong" }));
-check("Wrong passcode is rejected", bad.status === 401);
-const good = await call("/api/login", json({ passcode: process.env.APP_PASSCODE }));
-cookie = (good.headers.get("set-cookie") ?? "").split(";")[0];
-check("Correct passcode signs in", good.ok && cookie.startsWith("drawory_session="));
+// 1. Auth: only when a site-wide passcode is set; otherwise rooms are open to anyone with a code.
+if (process.env.APP_PASSCODE) {
+  const anon = await call(`/api/rooms`, json({ name: "x" }));
+  check("API refuses requests without the passcode cookie", anon.status === 401, `status ${anon.status}`);
+  const bad = await call("/api/login", json({ passcode: "wrong" }));
+  check("Wrong passcode is rejected", bad.status === 401);
+  const good = await call("/api/login", json({ passcode: process.env.APP_PASSCODE }));
+  cookie = (good.headers.get("set-cookie") ?? "").split(";")[0];
+  check("Correct passcode signs in", good.ok && cookie.startsWith("drawory_session="));
+} else {
+  const home = await call("/", { redirect: "manual" });
+  check("Home screen is open without a passcode", home.status === 200, `status ${home.status}`);
+}
+
+// 1b. Rooms
+const missing = await call(`/api/boards/nosuchroom/live`, json({ query: "elements" }));
+check("Unknown room code is a 404, not a new room", missing.status === 404, `status ${missing.status}`);
+const created = await call("/api/rooms", json({ name: "Smoke room", by: "smoke" }));
+const room = await created.json();
+BOARD = room.id;
+check("Creates a room with a 6-character code", created.status === 201 && /^[a-z2-9]{6}$/.test(room.id), room.id);
+const meta = await (await call(`/api/boards/${BOARD}`)).json();
+check("Room keeps its name", meta.name === "Smoke room");
 
 // 2. Seal live queries
 const sealed = {};
@@ -79,13 +92,14 @@ await elSub.awaitTxId((await upd.json()).txid, 10_000).catch(() => {});
 check("Element update streams", await waitFor(() => (elSub.getSnapshot().data ?? []).some((r) => r.id === id && r.data.x === 50 && r.data.items[0].done)));
 
 // 5. Presence and signals
-const pres = await call(`/api/boards/${BOARD}/presence`, json({ user_id: "smoke-user", name: "Smoke", color: "#2F6BD0", cursor_x: 12.5, cursor_y: 40, view_x: 0, view_y: 0, view_w: 1440, view_h: 900, zoom: 1, tool: "pen" }));
+const pres = await call(`/api/boards/${BOARD}/presence`, json({ user_id: "smoke-user", name: "Smoke", color: "#2F6BD0", cursor_x: 12.5, cursor_y: 40, view_x: 0, view_y: 0, view_w: 1440, view_h: 900, zoom: 1, tool: "pen", activity: { k: "draw", pts: [[0, 0], [10, 5], [20, 12]], c: "rose", s: 6 } }));
 const serverNow = (await pres.json()).now;
 check("Presence answers with the server clock", Math.abs(serverNow - Date.now()) < 60_000, `${serverNow - Date.now()} ms off`);
 check("Presence (cursor) streams", await waitFor(() => (prSub.getSnapshot().data ?? []).some((p) => p.user_id === "smoke-user" && p.cursor_x === 12.5 && p.tool === "pen")));
-const sig = await call(`/api/boards/${BOARD}/signals`, json({ kind: "heart", from: "smoke-user" }));
-check("Heart signal accepted", sig.status === 204);
-check("Heart signal streams", await waitFor(() => (sgSub.getSnapshot().data ?? []).some((s) => s.kind === "heart" && s.from_user === "smoke-user")));
+check("Live activity (stroke in progress) streams", await waitFor(() => (prSub.getSnapshot().data ?? []).some((p) => p.user_id === "smoke-user" && p.activity?.k === "draw" && p.activity.pts.length === 3)));
+const sig = await call(`/api/boards/${BOARD}/signals`, json({ kind: "wave", from: "smoke-user" }));
+check("Wave signal accepted", sig.status === 204);
+check("Wave signal streams", await waitFor(() => (sgSub.getSnapshot().data ?? []).some((s) => s.kind === "wave" && s.from_user === "smoke-user")));
 
 // 5b. Polling fallback (used when the live connection can't be reached)
 const snap = await (await call(`/api/boards/${BOARD}/snapshot?q=elements`)).json();

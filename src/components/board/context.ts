@@ -18,6 +18,8 @@ export interface BoardCtx {
   /** Change an element. commit=false only updates this screen (used while typing or dragging). */
   patch(id: string, data: Partial<ElementData>, commit?: boolean): void;
   finishText(id: string, text: string): void;
+  /** Shares what's being typed, so others see it letter by letter. */
+  reportTyping(id: string, text: string): void;
   stopEditing(): void;
   sendYt(elementId: string, cmd: Omit<YtCommand, "sentAt">): void;
   onYt(elementId: string, handler: (cmd: YtCommand) => void): () => void;

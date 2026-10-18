@@ -153,7 +153,7 @@ export function MemoryLane({
           <button type="button" className="icon-btn" aria-label="Back to now" onClick={onClose}>
             <Icon name="back" />
           </button>
-          <strong style={{ fontSize: 16, letterSpacing: "-0.02em" }}>Memory lane</strong>
+          <strong style={{ fontSize: 16, letterSpacing: "-0.02em" }}>Replay</strong>
         </div>
         <div className="pill lane-banner">
           <Icon name="history" size={18} style={{ color: "var(--accent)" }} />

@@ -24,6 +24,7 @@ export interface ElementData {
   h?: number;
   color?: string;
   size?: number; // stroke width, or font size for text
+  font?: string; // text font id, see FONTS
   dashed?: boolean;
   points?: number[][]; // stroke: [x, y, pressure] relative to x/y; arrow: [[0,0],[dx,dy]]
   text?: string;
@@ -72,13 +73,28 @@ export interface PresenceRow {
   zoom: number;
   tool: string | null;
   watching: string | null;
+  activity: Activity | null;
   updated_at: Date;
 }
+
+/**
+ * What someone is doing right now, shared through presence so others see it as it happens.
+ * Coordinates are in board (world) units.
+ */
+export type Activity =
+  | { k: "select"; ids: string[] }
+  | { k: "marquee"; b: [number, number, number, number] }
+  | { k: "draw"; pts: number[][]; c: string; s: number }
+  | { k: "shape"; t: "rect" | "ellipse" | "arrow"; d: ElementData }
+  | { k: "move"; items: [string, number, number][] }
+  | { k: "resize"; id: string; d: Partial<ElementData> }
+  | { k: "typing"; id: string; text: string; d: ElementData }
+  | { k: "erase"; ids: string[] };
 
 /** A row of the `signals` live query. int8 ids arrive as strings. */
 export interface SignalRow {
   id: string;
-  kind: "heart" | "yt" | "board";
+  kind: "wave" | "heart" | "yt" | "board";
   from_user: string;
   payload: Record<string, unknown>;
   created_at: Date;

@@ -34,7 +34,7 @@ export default function LoginPage() {
           <span>drawory</span>
         </div>
         <h1>Welcome back</h1>
-        <p className="muted">Enter the passcode you two share.</p>
+        <p className="muted">This site is protected. Enter its passcode.</p>
         <label htmlFor="passcode" className="field-label">
           Passcode
         </label>

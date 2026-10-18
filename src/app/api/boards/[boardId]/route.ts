@@ -1,4 +1,4 @@
-import { ensureBoard, pool } from "@/lib/server/db";
+import { requireBoard, pool } from "@/lib/server/db";
 import { boardIdFrom, cleanString, handler, HttpError } from "@/lib/server/http";
 
 type Ctx = { params: Promise<{ boardId: string }> };
@@ -13,14 +13,14 @@ async function readBoard(boardId: string) {
 
 export const GET = handler<Ctx>(async (_req, { params }) => {
   const boardId = boardIdFrom((await params).boardId);
-  await ensureBoard(boardId);
+  await requireBoard(boardId);
   return Response.json(await readBoard(boardId));
 });
 
 export const PATCH = handler<Ctx>(async (req, { params }) => {
   const boardId = boardIdFrom((await params).boardId);
   const body = await req.json();
-  const name = body.name === undefined ? null : cleanString(body.name, 80).trim() || "Our universe";
+  const name = body.name === undefined ? null : cleanString(body.name, 80).trim() || "Untitled room";
   let since: string | null | undefined = undefined;
   if (body.together_since !== undefined) {
     since = body.together_since === null || body.together_since === "" ? null : String(body.together_since);

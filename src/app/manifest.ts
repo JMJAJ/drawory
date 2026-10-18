@@ -5,7 +5,7 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "drawory",
     short_name: "drawory",
-    description: "An endless canvas for the two of you.",
+    description: "An endless canvas you draw on together. Make a room, share the code.",
     start_url: "/",
     display: "standalone",
     background_color: "#F5F5F7",

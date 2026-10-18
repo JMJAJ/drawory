@@ -1,4 +1,4 @@
-import { ensureBoard, pool } from "@/lib/server/db";
+import { requireBoard, pool } from "@/lib/server/db";
 import { boardIdFrom, handler, HttpError } from "@/lib/server/http";
 import { BOARD_QUERIES, ELEMENTS_VERSION, LIVE_QUERY_NAMES } from "@/lib/server/queries";
 import type { LiveQueryName } from "@/lib/types";
@@ -14,7 +14,7 @@ export const GET = handler<Ctx>(async (req, { params }) => {
   const boardId = boardIdFrom((await params).boardId);
   const name = req.nextUrl.searchParams.get("q") as LiveQueryName;
   if (!LIVE_QUERY_NAMES.includes(name)) throw new HttpError(400, "Unknown query");
-  await ensureBoard(boardId);
+  await requireBoard(boardId);
   const headers = { "Cache-Control": "no-store" };
   const now = Date.now();
 

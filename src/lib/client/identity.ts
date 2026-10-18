@@ -1,4 +1,4 @@
-// Who's on this device. Kept in localStorage; there are only ever two of you.
+// Who's on this device: a name and cursor color, kept in localStorage and used in every room.
 
 export interface Me {
   id: string;

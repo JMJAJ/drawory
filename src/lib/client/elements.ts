@@ -113,3 +113,16 @@ export function makeRow(type: ElementType, data: ElementData, z: number, created
   const now = new Date();
   return { id: newId(), type, data, z, created_by: createdBy, created_at: now, updated_at: now };
 }
+
+/** Fonts for text. Each maps to a CSS variable set up by next/font in the root layout. */
+export const FONTS = [
+  { id: "clean", label: "Clean", css: "var(--font-geist-sans), system-ui, sans-serif" },
+  { id: "elegant", label: "Elegant", css: "var(--font-elegant), Georgia, serif" },
+  { id: "hand", label: "Handwritten", css: "var(--font-hand), cursive" },
+  { id: "marker", label: "Marker", css: "var(--font-marker), cursive" },
+  { id: "mono", label: "Mono", css: "var(--font-geist-mono), ui-monospace, monospace" },
+] as const;
+
+export function fontValue(id: string | undefined) {
+  return (FONTS.find((f) => f.id === id) ?? FONTS[0]).css;
+}

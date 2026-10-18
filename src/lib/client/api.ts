@@ -39,6 +39,9 @@ export const api = {
   board(boardId: string) {
     return request<BoardMeta>(base(boardId));
   },
+  createRoom(name: string, by?: string) {
+    return request<{ id: string; name: string }>("/api/rooms", json({ name, by }));
+  },
   updateBoard(boardId: string, patch: Partial<BoardMeta> & { from: string }) {
     return request<BoardMeta>(base(boardId), json(patch, "PATCH"));
   },
@@ -56,7 +59,7 @@ export const api = {
       cache: "no-store",
     });
   },
-  signal(boardId: string, kind: "heart" | "yt", from: string, payload: Record<string, unknown> = {}) {
+  signal(boardId: string, kind: "wave" | "yt", from: string, payload: Record<string, unknown> = {}) {
     return request<void>(`${base(boardId)}/signals`, json({ kind, from, payload }));
   },
   history(boardId: string) {

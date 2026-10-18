@@ -2,9 +2,10 @@ import { pool } from "@/lib/server/db";
 import { boardIdFrom, cleanString, handler, HttpError } from "@/lib/server/http";
 
 type Ctx = { params: Promise<{ boardId: string }> };
-const KINDS = ["heart", "yt"];
+// "heart" is kept so older open tabs still work; new ones send "wave".
+const KINDS = ["wave", "heart", "yt"];
 
-/** Ephemeral nudges (hearts, synced video controls). Old ones are pruned as new ones arrive. */
+/** Ephemeral nudges (waves, synced video controls). Old ones are pruned as new ones arrive. */
 export const POST = handler<Ctx>(async (req, { params }) => {
   const boardId = boardIdFrom((await params).boardId);
   const b = await req.json();

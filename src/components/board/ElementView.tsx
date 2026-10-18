@@ -3,7 +3,8 @@
 import { getStroke } from "perfect-freehand";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
-import { bounds, colorValue, RESIZABLE } from "@/lib/client/elements";
+import { bounds, colorValue, fontValue, RESIZABLE } from "@/lib/client/elements";
+import { textOn } from "@/lib/client/identity";
 import { stickerSrc } from "@/lib/stickers";
 import type { ElementRow } from "@/lib/types";
 import { useBoard } from "./context";
@@ -116,7 +117,8 @@ function TextView({ row, editing }: { row: ElementRow; editing: boolean }) {
       className="text-body"
       contentEditable={editing}
       suppressContentEditableWarning
-      style={{ fontSize: row.data.size ?? 28, color: colorValue(row.data.color) }}
+      style={{ fontSize: row.data.size ?? 28, color: colorValue(row.data.color), fontFamily: fontValue(row.data.font) }}
+      onInput={(e) => editing && ctx.reportTyping(row.id, e.currentTarget.innerText)}
       onBlur={(e) => editing && ctx.finishText(row.id, e.currentTarget.innerText)}
       onKeyDown={(e) => {
         if (e.key === "Escape") e.currentTarget.blur();
@@ -540,16 +542,24 @@ function PlaceView({ row }: { row: ElementRow }) {
   );
 }
 
+/** Someone else is acting on this element right now: shown in their color. */
+export interface RemoteMark {
+  color: string;
+  name: string;
+  mode: "live" | "erasing" | "typing";
+}
+
 interface Props {
   row: ElementRow;
   selected: boolean;
+  remote?: RemoteMark;
   /** The only selected item: shows the resize handle. */
   solo?: boolean;
   editing: boolean;
   likes: number;
 }
 
-export const ElementView = memo(function ElementView({ row, selected, solo, editing, likes }: Props) {
+export const ElementView = memo(function ElementView({ row, selected, solo, editing, likes, remote }: Props) {
   const b = bounds(row);
   const autoHeight = ["text", "note", "audio", "capsule", "link"].includes(row.type);
   const autoWidth = row.type === "text";
@@ -605,8 +615,9 @@ export const ElementView = memo(function ElementView({ row, selected, solo, edit
     <div
       data-el={row.id}
       data-type={row.type}
-      className={`el el-${row.type}${selected ? " selected" : ""}`}
+      className={`el el-${row.type}${selected ? " selected" : ""}${remote ? ` remote-${remote.mode}` : ""}`}
       style={{
+        ["--rc" as string]: remote?.color,
         left: b.x,
         top: b.y,
         // The canvas layer has no width, so text must size itself to its content.
@@ -618,6 +629,11 @@ export const ElementView = memo(function ElementView({ row, selected, solo, edit
       }}
     >
       {content}
+      {remote?.mode === "typing" && (
+        <div className="remote-tag" style={{ background: remote.color, color: textOn(remote.color) }}>
+          {remote.name} is typing
+        </div>
+      )}
       {selected && solo && resizable && <div className="resize-handle" data-handle="resize" style={{ pointerEvents: "auto" }} />}
       {likes > 0 && (
         <div className="like-chip">
