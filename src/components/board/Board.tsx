@@ -51,7 +51,8 @@ type Gesture =
   | { kind: "shape"; type: "rect" | "ellipse" | "arrow"; ox: number; oy: number }
   | { kind: "move"; wx: number; wy: number; originals: ElementRow[]; moved: boolean }
   | { kind: "resize"; wx: number; wy: number; original: ElementRow }
-  | { kind: "erase"; originals: Map<string, ElementRow> };
+  | { kind: "erase"; originals: Map<string, ElementRow> }
+  | { kind: "marquee"; wx: number; wy: number; base: string[] };
 
 const TOOL_GROUPS: { id: Tool; label: string; icon: IconName; key?: string }[][] = [
   [
@@ -142,8 +143,19 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
   const [tool, setTool] = useState<Tool>("pen");
   const [colorId, setColorId] = useState("ink");
   const [sizeId, setSizeId] = useState(2);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  // Single-item helpers; the toolbar, editing and resizing work on one item.
+  const selectedId = selectedIds.length === 1 ? selectedIds[0] : null;
+  const setSelectedId = useCallback((id: string | null) => setSelectedIds(id ? [id] : []), []);
+  const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [editingId, setEditingIdState] = useState<string | null>(null);
+  // Mirrors editingId synchronously, so a finished edit can't be saved twice.
+  const editingRef = useRef<string | null>(null);
+  const setEditingId = useCallback((id: string | null) => {
+    editingRef.current = id;
+    setEditingIdState(id);
+  }, []);
   const [draft, setDraftState] = useState<ElementRow | null>(null);
   const draftRef = useRef<ElementRow | null>(null);
   const setDraft = useCallback((d: ElementRow | null) => {
@@ -351,7 +363,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
       if (select) setSelectedId(row.id);
       return row;
     },
-    [me.id, nextZ, send],
+    [me.id, nextZ, send, setSelectedId],
   );
   const undo = useCallback(() => {
     const changes = undoStack.current.pop();
@@ -385,7 +397,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
       void send(changes);
       setSelectedId(null);
     },
-    [send],
+    [send, setSelectedId],
   );
 
   /* ---------- Presence ---------- */
@@ -674,12 +686,29 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
   function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
     const target = e.target as HTMLElement;
     if (tool === "select" && !laneOpen && target.closest("[data-interactive]")) return;
-    if (editingId && !target.closest(`[data-el="${editingId}"]`)) {
+    // Clicks inside the thing being edited go to it (placing the caret, selecting text).
+    if (editingId && target.closest(`[data-el="${editingId}"]`)) return;
+    if (editingId) {
+      // A click away finishes what you were editing, and does nothing else.
+      // Text is saved straight from the box rather than relying on the blur event.
+      const editingRow = rowsRef.current.get(editingId);
+      if (editingRow?.type === "text") {
+        const box = rootRef.current?.querySelector<HTMLElement>(`[data-el="${editingId}"] .text-body`);
+        finishText(editingId, box?.innerText ?? "");
+      }
       (document.activeElement as HTMLElement | null)?.blur?.();
       setEditingId(null);
+      e.preventDefault();
+      return;
     }
+    // Stop the browser's own mousedown handling, which would steal focus back from a
+    // text box or list we create on this click and make it vanish as "empty".
+    e.preventDefault();
     setMenuOpen(false);
     e.currentTarget.setPointerCapture(e.pointerId);
+    // A new mouse press or first finger starts fresh, even if a release was missed
+    // (e.g. let go outside the window); otherwise it would be mistaken for a pinch.
+    if (e.isPrimary) pointers.current.clear();
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
     if (pointers.current.size === 2) {
@@ -710,18 +739,30 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
         if (elId) {
           const row = rowsRef.current.get(elId);
           if (!row) return;
-          setSelectedId(elId);
-          const originals = [row];
-          if (row.type === "place") {
-            const area = bounds(row);
-            for (const r of rowsRef.current.values()) if (r.id !== row.id && r.type !== "place" && contains(area, bounds(r))) originals.push(r);
+          if (e.shiftKey || e.ctrlKey || e.metaKey) {
+            // Add to or remove from the selection, like Ctrl/Shift-click in a file manager.
+            setSelectedIds((ids) => (ids.includes(elId) ? ids.filter((i) => i !== elId) : [...ids, elId]));
+            return;
           }
+          // Dragging any selected item moves the whole selection.
+          const group = selectedSet.has(elId) ? selectedIds : [elId];
+          if (!selectedSet.has(elId)) setSelectedId(elId);
+          const ids = new Set(group);
+          for (const id of group) {
+            const r = rowsRef.current.get(id);
+            if (r?.type !== "place") continue;
+            const area = bounds(r);
+            for (const other of rowsRef.current.values()) if (other.type !== "place" && contains(area, bounds(other))) ids.add(other.id);
+          }
+          const originals = [...ids].map((id) => rowsRef.current.get(id)).filter((r): r is ElementRow => !!r);
           gesture.current = { kind: "move", wx: w.x, wy: w.y, originals, moved: false };
           return;
         }
-        setSelectedId(null);
+        // Empty canvas: draw a selection box. Shift/Ctrl adds to what's already selected.
+        const base = e.shiftKey || e.ctrlKey || e.metaKey ? selectedIds : [];
+        if (!base.length) setSelectedIds([]);
         setFollowing(false);
-        gesture.current = { kind: "pan", sx: e.clientX, sy: e.clientY, cam: { ...cam.current } };
+        gesture.current = { kind: "marquee", wx: w.x, wy: w.y, base };
         return;
       }
       case "pen": {
@@ -852,6 +893,20 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
       case "erase":
         eraseAt(e.clientX, e.clientY, g);
         break;
+      case "marquee": {
+        const box = { x: Math.min(g.wx, w.x), y: Math.min(g.wy, w.y), w: Math.abs(w.x - g.wx), h: Math.abs(w.y - g.wy) };
+        if (box.w * cam.current.zoom < 3 && box.h * cam.current.zoom < 3) break;
+        setMarquee(box);
+        const hit: string[] = [];
+        for (const r of rowsRef.current.values()) {
+          const b = bounds(r);
+          // Touching is enough, except for places, which must be fully inside (they're big).
+          const touches = b.x < box.x + box.w && b.x + b.w > box.x && b.y < box.y + box.h && b.y + b.h > box.y;
+          if (r.type === "place" ? contains(box, b) : touches) hit.push(r.id);
+        }
+        setSelectedIds([...new Set([...g.base, ...hit])]);
+        break;
+      }
     }
   }
 
@@ -897,6 +952,9 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
       }
       case "erase":
         if (g.originals.size) void send([...g.originals.values()].map((r) => ({ before: r, after: null })));
+        break;
+      case "marquee":
+        setMarquee(null);
         break;
     }
   }
@@ -945,11 +1003,15 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
       } else if (mod && e.key === "-") {
         e.preventDefault();
         zoomAt(window.innerWidth / 2, window.innerHeight / 2, cam.current.zoom / 1.2);
-      } else if ((e.key === "Delete" || e.key === "Backspace") && selectedId && !laneOpen) {
+      } else if (mod && e.key.toLowerCase() === "a" && !laneOpen) {
         e.preventDefault();
-        deleteIds([selectedId]);
+        setTool("select");
+        setSelectedIds([...rowsRef.current.keys()]);
+      } else if ((e.key === "Delete" || e.key === "Backspace") && selectedIds.length && !laneOpen) {
+        e.preventDefault();
+        deleteIds(selectedIds);
       } else if (e.key === "Escape") {
-        setSelectedId(null);
+        setSelectedIds([]);
         setMenuOpen(false);
       } else if (e.key === " " && !e.repeat) {
         e.preventDefault();
@@ -1011,6 +1073,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
   }, []);
   const finishText = useCallback(
     (id: string, text: string) => {
+      if (editingRef.current !== id) return; // already finished
       setEditingId(null);
       const row = rowsRef.current.get(id);
       if (!row) return;
@@ -1024,7 +1087,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
       if (before?.data.text === clean) return;
       void send([{ before, after: { ...row, data: { ...row.data, text: clean } } }]);
     },
-    [send, dropPreview],
+    [send, dropPreview, setEditingId],
   );
   const ctx: BoardCtx = useMemo(
     () => ({
@@ -1042,35 +1105,44 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
       openCapsule: (id) => setDialog({ kind: "capsuleOpen", id, title: rowsRef.current.get(id)?.data.title || "Time capsule" }),
       addToCapsule: (id) => setDialog({ kind: "capsuleNote", id }),
     }),
-    [boardId, me, laneOpen, camera.zoom, watchers, patch, finishText, sendYt, onYt],
+    [boardId, me, laneOpen, camera.zoom, watchers, patch, finishText, sendYt, onYt, setEditingId],
   );
 
   /* ---------- Render ---------- */
   const displayRows = laneOpen ? laneRows ?? [] : rows;
   const placesLayer = displayRows.filter((r) => r.type === "place");
   const contentLayer = displayRows.filter((r) => r.type !== "place");
-  const selected = !laneOpen && selectedId ? rowsById.get(selectedId) ?? null : null;
-  const showStyle = !laneOpen && (DRAW_TOOLS.includes(tool) || (tool === "select" && !!selected && STYLABLE.includes(selected.type)));
-  const activeColor = tool === "select" && selected?.data.color ? selected.data.color : colorId;
+  const selectedRows = laneOpen ? [] : selectedIds.map((id) => rowsById.get(id)).filter((r): r is ElementRow => !!r);
+  const selected = selectedRows.length === 1 ? selectedRows[0] : null;
+  const stylable = selectedRows.filter((r) => STYLABLE.includes(r.type));
+  const showStyle = !laneOpen && (DRAW_TOOLS.includes(tool) || (tool === "select" && stylable.length > 0));
+  const activeColor = tool === "select" && stylable[0]?.data.color ? stylable[0].data.color : colorId;
   const status = elQ.status;
   const togetherDays = board?.together_since
     ? Math.floor((now - new Date(`${board.together_since}T00:00:00`).getTime()) / 86_400_000) + 1
     : null;
-  const selBox = selected ? bounds(selected) : null;
-  const iLike = !!selected?.data.likes?.includes(me.id);
+  const selBox = selectedRows.length ? unionBounds(selectedRows) : null;
+  const iLike = selectedRows.length > 0 && selectedRows.every((r) => r.data.likes?.includes(me.id));
 
   function applyStyle(next: { color?: string; size?: number }) {
     if (next.color) setColorId(next.color);
     if (next.size) setSizeId(next.size);
-    if (tool !== "select" || !selected) return;
-    const data: Partial<ElementData> = {};
-    if (next.color) data.color = next.color;
-    if (next.size) {
-      if (selected.type === "text") data.size = TEXT_SIZES[next.size - 1];
-      else if (selected.type === "stroke") return; // stroke width is baked into its shape
-      else data.size = SHAPE_WIDTHS[next.size - 1];
-    }
-    patch(selected.id, data);
+    if (tool !== "select" || !stylable.length) return;
+    const changes = stylable.flatMap((r) => {
+      const data: Partial<ElementData> = {};
+      if (next.color) data.color = next.color;
+      if (next.size) {
+        if (r.type === "text") data.size = TEXT_SIZES[next.size - 1];
+        else if (r.type !== "stroke") data.size = SHAPE_WIDTHS[next.size - 1]; // stroke width is baked into its shape
+      }
+      if (!Object.keys(data).length) return [];
+      return [{ before: committedRef.current.get(r.id) ?? r, after: { ...r, data: { ...r.data, ...data } } }];
+    });
+    void send(changes);
+  }
+
+  function changeAll(fn: (r: ElementRow) => ElementRow) {
+    void send(selectedRows.map((r) => ({ before: committedRef.current.get(r.id) ?? r, after: fn(r) })));
   }
 
   function fitAll() {
@@ -1085,6 +1157,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
         ref={rootRef}
         className={`board-root tool-${laneOpen ? "hand" : tool}${spaceHeld ? " panning" : ""}${laneOpen ? " replay" : ""}`}
         style={{
+          ["--sel" as string]: me.color,
           backgroundSize: `${22 * camera.zoom}px ${22 * camera.zoom}px`,
           backgroundPosition: `${camera.x}px ${camera.y}px`,
         }}
@@ -1117,13 +1190,14 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
       >
         <div className="world" style={{ transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.zoom})` }}>
           {placesLayer.map((r) => (
-            <ElementView key={r.id} row={r} selected={r.id === selectedId && !laneOpen} editing={false} likes={0} />
+            <ElementView key={r.id} row={r} selected={selectedSet.has(r.id) && !laneOpen} solo={r.id === selectedId} editing={false} likes={0} />
           ))}
           {contentLayer.map((r) => (
             <ElementView
               key={r.id}
               row={r}
-              selected={r.id === selectedId && !laneOpen}
+              selected={selectedSet.has(r.id) && !laneOpen}
+              solo={r.id === selectedId}
               editing={r.id === editingId && !laneOpen}
               likes={r.data.likes?.length ?? 0}
             />
@@ -1134,6 +1208,18 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
             </div>
           )}
           {draft && draft.type !== "stroke" && <ElementView row={draft} selected={false} editing={false} likes={0} />}
+          {marquee && (
+            <div
+              className="marquee"
+              style={{ left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h, borderWidth: 1.5 / camera.zoom }}
+            />
+          )}
+          {!marquee && selectedRows.length > 1 && selBox && (
+            <div
+              className="group-box"
+              style={{ left: selBox.x - 8 / camera.zoom, top: selBox.y - 8 / camera.zoom, width: selBox.w + 16 / camera.zoom, height: selBox.h + 16 / camera.zoom, borderWidth: 1.5 / camera.zoom }}
+            />
+          )}
           {!laneOpen &&
             online.map((p) =>
               p.cursor_x == null || p.cursor_y == null ? null : (
@@ -1166,7 +1252,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
         ))}
       </div>
 
-      {selected && selBox && tool === "select" && !editingId && (
+      {selectedRows.length > 0 && selBox && !marquee && tool === "select" && !editingId && (
         <div
           className="sel-toolbar surface"
           style={{ left: (selBox.x + selBox.w / 2) * camera.zoom + camera.x, top: Math.max(80, selBox.y * camera.zoom + camera.y) }}
@@ -1174,17 +1260,20 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
           <button
             type="button"
             className="icon-btn sm"
-            aria-label={iLike ? "Unlike" : "Like"}
+            aria-label={iLike ? "Unlike" : selectedRows.length > 1 ? `Like all ${selectedRows.length}` : "Like"}
             aria-pressed={iLike}
             style={iLike ? { color: "var(--accent)", background: "var(--accent-soft)" } : undefined}
-            onClick={() => {
-              const likes = selected.data.likes ?? [];
-              patch(selected.id, { likes: iLike ? likes.filter((l) => l !== me.id) : [...likes, me.id] });
-            }}
+            onClick={() =>
+              changeAll((r) => {
+                const likes = (r.data.likes ?? []).filter((l) => l !== me.id);
+                return { ...r, data: { ...r.data, likes: iLike ? likes : [...likes, me.id] } };
+              })
+            }
           >
             <Icon name="heart" size={18} filled={iLike} />
           </button>
-          {["text", "note", "image"].includes(selected.type) && (
+          {selectedRows.length > 1 && <span className="sel-count">{selectedRows.length} selected</span>}
+          {selected && ["text", "note", "image"].includes(selected.type) && (
             <button type="button" className="icon-btn sm" aria-label="Edit" onClick={() => setEditingId(selected.id)}>
               <Icon name="pen" size={18} />
             </button>
@@ -1193,11 +1282,14 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
             type="button"
             className="icon-btn sm"
             aria-label="Bring to front"
-            onClick={() => patchZ(selected)}
+            onClick={() => {
+              let z = nextZ();
+              changeAll((r) => ({ ...r, z: z++ }));
+            }}
           >
             <Icon name="front" size={18} />
           </button>
-          <button type="button" className="icon-btn sm" aria-label="Delete" onClick={() => deleteIds([selected.id])}>
+          <button type="button" className="icon-btn sm" aria-label={selectedRows.length > 1 ? `Delete ${selectedRows.length} items` : "Delete"} onClick={() => deleteIds(selectedIds)}>
             <Icon name="trash" size={18} />
           </button>
         </div>
@@ -1510,8 +1602,4 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
     </BoardContext.Provider>
   );
 
-  function patchZ(row: ElementRow) {
-    const after = { ...row, z: nextZ() };
-    void send([{ before: committedRef.current.get(row.id) ?? row, after }]);
-  }
 }

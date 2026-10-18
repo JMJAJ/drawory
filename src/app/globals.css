@@ -305,14 +305,14 @@ button:disabled { cursor: default; opacity: 0.55; }
 
 /* ---------- Elements ---------- */
 .el { position: absolute; }
-.el.selected { outline: 1.5px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
+.el.selected { outline: 1.5px solid var(--sel, var(--accent)); outline-offset: 4px; border-radius: 4px; }
 .el.dragging { opacity: 0.9; }
 .el-svg { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
 .el-svg .hit { pointer-events: visiblePainted; }
 .el-svg .hit-stroke { pointer-events: stroke; }
 .resize-handle {
   position: absolute; right: -11px; bottom: -11px; width: 14px; height: 14px; border-radius: 4px;
-  background: var(--surface); border: 1.5px solid var(--accent); cursor: nwse-resize; z-index: 2;
+  background: var(--surface); border: 1.5px solid var(--sel, var(--accent)); cursor: nwse-resize; z-index: 2;
 }
 .like-chip {
   position: absolute; right: -10px; bottom: -12px; display: flex; align-items: center; gap: 4px;
@@ -324,11 +324,12 @@ button:disabled { cursor: default; opacity: 0.55; }
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
   box-shadow: 0 8px 24px var(--shadow);
 }
-.el-text {
-  white-space: pre-wrap; font-weight: 600; letter-spacing: -0.02em; line-height: 1.2;
-  min-width: 20px; outline: none; padding: 4px 6px; cursor: default; word-break: break-word;
+/* Text sizes to its content: lines break only where you press Enter. */
+.text-body {
+  white-space: pre; font-weight: 600; letter-spacing: -0.02em; line-height: 1.2;
+  min-width: 20px; min-height: 1.2em; outline: none; padding: 4px 6px; cursor: default;
 }
-.el-text[contenteditable="true"] { cursor: text; user-select: text; background: color-mix(in srgb, var(--surface) 70%, transparent); border-radius: 6px; }
+.text-body[contenteditable="true"] { cursor: text; user-select: text; background: color-mix(in srgb, var(--surface) 70%, transparent); border-radius: 6px; }
 
 .note { padding: 16px; display: flex; flex-direction: column; gap: 4px; }
 .note-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
@@ -592,3 +593,13 @@ button:disabled { cursor: default; opacity: 0.55; }
 .people .person .avatar { box-shadow: 0 0 0 2px var(--surface); }
 .people .person[aria-pressed="true"] .avatar { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--text); }
 .avatar.more { background: var(--soft); color: var(--text); font-size: 11px; }
+
+/* Selection box, in the selecting person's cursor color */
+.marquee {
+  position: absolute; z-index: 999998; pointer-events: none; border-style: solid; border-color: var(--sel, var(--accent));
+  background: color-mix(in srgb, var(--sel, var(--accent)) 12%, transparent); border-radius: 2px;
+}
+.group-box {
+  position: absolute; z-index: 999997; pointer-events: none; border-style: dashed; border-color: var(--sel, var(--accent)); border-radius: 6px;
+}
+.sel-count { display: flex; align-items: center; padding: 0 10px; font-size: 13px; font-weight: 600; white-space: nowrap; color: var(--muted); }

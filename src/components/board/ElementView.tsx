@@ -1,7 +1,7 @@
 "use client";
 
 import { getStroke } from "perfect-freehand";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
 import { bounds, colorValue, RESIZABLE } from "@/lib/client/elements";
 import type { ElementRow } from "@/lib/types";
@@ -90,18 +90,29 @@ function TextView({ row, editing }: { row: ElementRow; editing: boolean }) {
   useEffect(() => {
     const el = ref.current;
     if (!editing || !el) return;
-    el.focus();
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    range.collapse(false);
-    const sel = window.getSelection();
-    sel?.removeAllRanges();
-    sel?.addRange(range);
+    // Focus after the click that created it has fully finished.
+    const timer = setTimeout(() => {
+      el.focus();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    });
+    return () => clearTimeout(timer);
   }, [editing]);
+  // The browser owns the text while you type, so React never renders it as a child
+  // (that would duplicate what you typed). It's written in here whenever you're not editing.
+  const text = row.data.text ?? "";
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && !editing && el.innerText !== text) el.innerText = text;
+  }, [text, editing]);
   return (
     <div
       ref={ref}
-      className="el-text"
+      className="text-body"
       contentEditable={editing}
       suppressContentEditableWarning
       style={{ fontSize: row.data.size ?? 28, color: colorValue(row.data.color) }}
@@ -110,9 +121,7 @@ function TextView({ row, editing }: { row: ElementRow; editing: boolean }) {
         if (e.key === "Escape") e.currentTarget.blur();
         e.stopPropagation();
       }}
-    >
-      {row.data.text}
-    </div>
+    />
   );
 }
 
@@ -533,11 +542,13 @@ function PlaceView({ row }: { row: ElementRow }) {
 interface Props {
   row: ElementRow;
   selected: boolean;
+  /** The only selected item: shows the resize handle. */
+  solo?: boolean;
   editing: boolean;
   likes: number;
 }
 
-export const ElementView = memo(function ElementView({ row, selected, editing, likes }: Props) {
+export const ElementView = memo(function ElementView({ row, selected, solo, editing, likes }: Props) {
   const b = bounds(row);
   const autoHeight = ["text", "note", "audio", "capsule", "link"].includes(row.type);
   const autoWidth = row.type === "text";
@@ -597,7 +608,8 @@ export const ElementView = memo(function ElementView({ row, selected, editing, l
       style={{
         left: b.x,
         top: b.y,
-        width: autoWidth ? undefined : b.w,
+        // The canvas layer has no width, so text must size itself to its content.
+        width: autoWidth ? "max-content" : b.w,
         height: autoHeight ? undefined : b.h,
         zIndex: row.type === "place" ? 0 : Math.round(row.z) + 1,
         whiteSpace: autoWidth ? "pre" : undefined,
@@ -605,7 +617,7 @@ export const ElementView = memo(function ElementView({ row, selected, editing, l
       }}
     >
       {content}
-      {selected && resizable && <div className="resize-handle" data-handle="resize" style={{ pointerEvents: "auto" }} />}
+      {selected && solo && resizable && <div className="resize-handle" data-handle="resize" style={{ pointerEvents: "auto" }} />}
       {likes > 0 && (
         <div className="like-chip">
           <Icon name="heart" size={12} filled />

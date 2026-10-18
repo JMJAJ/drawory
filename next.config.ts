@@ -1,9 +1,7 @@
 import type { NextConfig } from "next";
 
-const nextConfig: NextConfig = {
-  /* config options here */
-  cacheComponents: true,
-  partialPrefetching: true,
-};
+// Everything on a board is live data from Neon Realtime, so Next's caching
+// (Cache Components) has nothing to cache here and is left off.
+const nextConfig: NextConfig = {};
 
 export default nextConfig;
