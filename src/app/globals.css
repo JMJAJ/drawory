@@ -941,3 +941,14 @@ button.tag:hover { background: color-mix(in srgb, var(--tag) 26%, transparent); 
 .chatbox .chat-msg { max-width: 90%; }
 
 .board-root:not(.replay) .chatbox [data-interactive] { pointer-events: auto; }
+
+/* ---------- Stickers in chat boxes ---------- */
+.chatbox { overflow: visible; }
+.chatbox .chat-form { position: relative; }
+.chat-sticker-btn { color: var(--muted); flex: none; }
+.chat-sticker-btn[aria-expanded="true"] { color: var(--accent); background: var(--accent-soft); }
+.chat-sticker-pop { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 5; display: flex; justify-content: center; }
+.chat-sticker-pop .sticker-tray { width: 100%; min-width: 260px; max-height: 320px; }
+.chat-sticker-pop .sticker-grid { grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); }
+.chat-bubble.sticker { background: transparent !important; padding: 0; }
+.chat-sticker { display: block; width: 104px; height: 104px; object-fit: contain; }

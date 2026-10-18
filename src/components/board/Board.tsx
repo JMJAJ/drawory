@@ -25,7 +25,6 @@ import { initials, textOn, type Me } from "@/lib/client/identity";
 import { audioPeaks, detectLink, fitWithin, imageSize, shrinkPhoto, videoSize, type DetectedLink } from "@/lib/client/media";
 import type { Activity, BoardMeta, BoardPage, ChatRow, ElementData, ElementRow, ElementType, PresenceRow } from "@/lib/types";
 import { PagesBar } from "./PagesBar";
-import { ChatPanel } from "./ChatPanel";
 import { BoardContext, type BoardCtx, type YtCommand } from "./context";
 import {
   AddMediaDialog,
@@ -772,19 +771,9 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     });
   }, [onlineHere, camera, vp]);
 
-  /* ---------- Chat ---------- */
-  const [chatOpen, setChatOpen] = useState(false);
-  const chatSeenKey = `drawory:chat-seen:${boardId}`;
-  const [chatSeen, setChatSeen] = useState<number>(() => {
-    try {
-      return Number(localStorage.getItem(chatSeenKey)) || 0;
-    } catch {
-      return 0;
-    }
-  });
-  // The room chat is messages without a thread; each chat box on the board has its own.
+  /* ---------- Chat boxes ---------- */
+  // Each chat box on the board is a thread of messages (thread = its id).
   const allChat = sync.chat;
-  const chat = useMemo(() => allChat?.filter((m) => !m.thread), [allChat]);
   const threads = useMemo(() => {
     const map = new Map<string, ChatRow[]>();
     for (const m of allChat ?? []) {
@@ -795,33 +784,10 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     }
     return map;
   }, [allChat]);
-  const newestChatId = chat?.length ? Number(chat[0].id) : 0;
-  const unread = chatOpen || !chat ? 0 : chat.filter((m) => m.user_id !== me.id && Number(m.id) > chatSeen).length;
-  // Opening the chat (or reading it while open) marks everything as seen.
-  useEffect(() => {
-    if (!chatOpen || !newestChatId || newestChatId <= chatSeen) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- remember what's been read
-    setChatSeen(newestChatId);
-    try {
-      localStorage.setItem(chatSeenKey, String(newestChatId));
-    } catch {}
-  }, [chatOpen, newestChatId, chatSeen, chatSeenKey]);
-  // A new message while the chat is closed: show a short preview.
-  const lastChatId = useRef<number | null>(null);
-  useEffect(() => {
-    if (!chat) return;
-    const prev = lastChatId.current;
-    lastChatId.current = newestChatId;
-    if (prev === null || chatOpen) return;
-    const fresh = chat.filter((m) => Number(m.id) > prev && m.user_id !== me.id);
-    const m = fresh[0];
-    if (m) showToast(`${m.name}: ${m.body.length > 70 ? `${m.body.slice(0, 70)}…` : m.body}`, false, { label: "Reply", run: () => setChatOpen(true) });
-  }, [chat, newestChatId, chatOpen, me.id, showToast]);
   const sendTo = useCallback(
     (thread: string | null, body: string) => api.sendMessage(boardId, { user_id: me.id, name: me.name, color: me.color, body, thread }),
     [boardId, me],
   );
-  const sendChat = useCallback((body: string) => sendTo(null, body), [sendTo]);
 
   /* ---------- Signals: hearts, synced video ---------- */
   const spawnHearts = useCallback((x: number, y: number) => {
@@ -1464,7 +1430,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     const onWheel = (e: WheelEvent) => {
       if ((e.target as HTMLElement).closest(".dialog, .menu-panel")) return;
       // A plain scroll over a chat box's messages scrolls them (Ctrl+scroll still zooms).
-      if (!e.ctrlKey && !e.metaKey && (e.target as HTMLElement).closest(".chatbox .chat-list")) return;
+      if (!e.ctrlKey && !e.metaKey && (e.target as HTMLElement).closest(".chatbox .chat-list, .chatbox .sticker-scroll")) return;
       e.preventDefault();
       setFollowing(false);
       if (e.ctrlKey || e.metaKey) {
@@ -2106,17 +2072,6 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
               </div>
               <button
                 type="button"
-                className="icon-btn surface theme-btn chat-btn"
-                aria-label={unread ? `Chat, ${unread} unread` : "Chat"}
-                aria-expanded={chatOpen}
-                title="Chat"
-                onClick={() => setChatOpen((o) => !o)}
-              >
-                <Icon name="chat" />
-                {unread > 0 && <span className="badge">{unread > 9 ? "9+" : unread}</span>}
-              </button>
-              <button
-                type="button"
                 className="icon-btn surface theme-btn"
                 aria-label={theme === "dark" ? "Switch to day" : "Switch to night"}
                 title={theme === "dark" ? "Switch to day" : "Switch to night"}
@@ -2291,8 +2246,6 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
           </div>
         </>
       )}
-
-      {chatOpen && !laneOpen && <ChatPanel messages={chat ?? []} me={me} onClose={() => setChatOpen(false)} onSend={sendChat} />}
 
       {toast && (
         <div className="toast" role="status" key={toast.id}>

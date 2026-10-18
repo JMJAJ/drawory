@@ -3,7 +3,26 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
 import { initials, textOn, type Me } from "@/lib/client/identity";
+import { STICKERS } from "@/lib/stickers";
 import type { ChatRow } from "@/lib/types";
+import { StickerTray } from "./StickerTray";
+
+/** A sticker is sent as this prefix plus the sticker's address; only built-in stickers show as images. */
+const STICKER_PREFIX = ":sticker:";
+function stickerIn(body: string) {
+  return body.startsWith(STICKER_PREFIX) ? STICKERS.find((s) => s.url === body.slice(STICKER_PREFIX.length)) : undefined;
+}
+
+function Bubble({ body }: { body: string }) {
+  const sticker = stickerIn(body);
+  if (!sticker) return <div className="chat-bubble">{body}</div>;
+  return (
+    <div className="chat-bubble sticker">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img className="chat-sticker" src={sticker.url} alt={`Sticker: ${sticker.name}`} title={sticker.name} loading="lazy" draggable={false} />
+    </div>
+  );
+}
 
 interface Pending {
   key: string;
@@ -40,6 +59,7 @@ export function ChatThread({
 }) {
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<Pending[]>([]);
+  const [stickers, setStickers] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const ordered = [...messages].reverse();
   const savedIds = new Set(messages.map((m) => m.id));
@@ -51,12 +71,12 @@ export function ChatThread({
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length, waiting.length]);
 
-  function send() {
-    const body = draft.trim();
+  function send(text = draft) {
+    const body = text.trim();
     if (!body) return;
     const key = crypto.randomUUID();
     setPending((p) => [...p, { key, body }]);
-    setDraft("");
+    if (text === draft) setDraft("");
     onSend(body).then(
       (saved) => setPending((p) => p.map((x) => (x.key === key ? { ...x, id: saved.id } : x))),
       () => setPending((p) => p.map((x) => (x.key === key ? { ...x, failed: true } : x))),
@@ -84,13 +104,13 @@ export function ChatThread({
                 </div>
               )}
               {!grouped && mine && <div className="chat-who mine-time muted">{time(m.created_at)}</div>}
-              <div className="chat-bubble">{m.body}</div>
+              <Bubble body={m.body} />
             </div>
           );
         })}
         {waiting.map((p) => (
           <div key={p.key} className={`chat-msg mine${p.failed ? " failed" : " sending"}`}>
-            <div className="chat-bubble">{p.body}</div>
+            <Bubble body={p.body} />
             {p.failed && (
               <button
                 type="button"
@@ -98,7 +118,8 @@ export function ChatThread({
                 data-interactive
                 onClick={() => {
                   setPending((list) => list.filter((x) => x.key !== p.key));
-                  setDraft(p.body);
+                  if (stickerIn(p.body)) send(p.body);
+                  else setDraft(p.body);
                 }}
               >
                 Didn&apos;t send · tap to edit and retry
@@ -115,6 +136,29 @@ export function ChatThread({
             send();
           }}
         >
+          {stickers && (
+            <div className="chat-sticker-pop" data-interactive>
+              <StickerTray
+                onClose={() => setStickers(false)}
+                onPick={(s) => {
+                  setStickers(false);
+                  send(STICKER_PREFIX + s.url);
+                }}
+              />
+            </div>
+          )}
+          <button
+            type="button"
+            className="icon-btn chat-sticker-btn"
+            aria-label="Send a sticker"
+            aria-expanded={stickers}
+            title="Stickers"
+            data-interactive
+            data-sticker-toggle
+            onClick={() => setStickers((o) => !o)}
+          >
+            <Icon name="sticker" size={20} />
+          </button>
           <label htmlFor={inputId} className="sr-only">
             Message
           </label>
