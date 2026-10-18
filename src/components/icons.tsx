@@ -41,6 +41,7 @@ export const ICONS = {
   stop: "M6 6h12v12H6z",
   fit: "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5",
   stickynote: "M16 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8zM15 3v6h6M7 10h6M7 14h9",
+  music: "M9 18V5l12-2v13M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM21 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0z",
   smile: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01",
   crop: "M6 2v14a2 2 0 0 0 2 2h14M18 22V8a2 2 0 0 0-2-2H2",
   calendar: "M4 5h16v16H4zM4 9h16M8 3v4M16 3v4",

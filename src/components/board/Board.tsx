@@ -25,12 +25,14 @@ import {
 import { displayCode, inviteLink, rememberRoom } from "@/lib/client/rooms";
 import { initials, textOn, type Me } from "@/lib/client/identity";
 import { audioPeaks, detectLink, fitWithin, imageSize, shrinkPhoto, videoSize, type DetectedLink } from "@/lib/client/media";
+import type { Listening } from "@/lib/types";
 import type { Activity, BoardMeta, BoardPage, ChatRow, ElementData, ElementOp, ElementRow, ElementType, PresenceRow, WinBlock } from "@/lib/types";
 import { applyEdit, type Edit } from "@/lib/edits";
 import { PagesBar } from "./PagesBar";
 import { NowPlaying, type PlayingItem } from "./NowPlaying";
 import { BoardContext, type BoardCtx, type Unread, type YtCommand } from "./context";
 import { mentions } from "@/lib/reactions";
+import { connectSpotify, forgetSpotify, setSharingSpotify, sharingSpotify, spotifyKey, takeSpotifyReturn } from "@/lib/client/spotify";
 import {
   AddMediaDialog,
   CapsuleDialog,
@@ -619,6 +621,59 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
     [send, setSelectedId, showToast],
   );
 
+  /* ---------- Spotify: share what I'm listening to ---------- */
+  const [spotifyLinked, setSpotifyLinked] = useState(false);
+  const [shareSpotify, setShareSpotify] = useState(true);
+  const [myTrack, setMyTrack] = useState<Listening | null>(null);
+  const listeningRef = useRef<Listening | null>(null);
+  // Linked before, or just came back from Spotify's sign-in.
+  useEffect(() => {
+    const back = takeSpotifyReturn();
+    queueMicrotask(() => {
+      setSpotifyLinked(!!spotifyKey());
+      setShareSpotify(sharingSpotify());
+      if (back === "linked") showToast("Spotify connected. The room now sees what you're playing.");
+      else if (back === "setup") showToast("Spotify isn't set up on this site yet (it needs a Spotify app's keys).");
+      else if (back === "denied") showToast("Spotify wasn't connected.");
+      else if (back === "failed") showToast("Couldn't connect Spotify. Try again.");
+    });
+  }, [showToast]);
+  // Ask Spotify what's playing every 10 s while sharing (only while this tab is open).
+  useEffect(() => {
+    if (!spotifyLinked || !shareSpotify || viewOnly) {
+      listeningRef.current = null;
+      queueMicrotask(() => setMyTrack(null));
+      return;
+    }
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      if (document.visibilityState === "visible") {
+        try {
+          const res = await fetch("/api/spotify/now", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: spotifyKey() }) });
+          if (res.status === 404 || res.status === 401) {
+            forgetSpotify();
+            setSpotifyLinked(false);
+            showToast("Spotify was disconnected. Connect it again from the menu.");
+            return;
+          }
+          const { track } = (await res.json()) as { track: (Omit<Listening, "at"> & { playing: boolean }) | null };
+          const next = track?.playing ? { title: track.title, artists: track.artists, image: track.image, url: track.url, progress: track.progress, duration: track.duration, at: Date.now() } : null;
+          const changed = (next?.url ?? next?.title ?? null) !== (listeningRef.current?.url ?? listeningRef.current?.title ?? null);
+          listeningRef.current = next;
+          if (!stop) setMyTrack(next);
+          if (changed) pushPresenceRef.current();
+        } catch {}
+      }
+      if (!stop) timer = setTimeout(tick, 10_000);
+    };
+    void tick();
+    return () => {
+      stop = true;
+      clearTimeout(timer);
+    };
+  }, [spotifyLinked, shareSpotify, viewOnly, showToast]);
+
   /* ---------- Presence ---------- */
   const presenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastPresence = useRef(0);
@@ -671,6 +726,7 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
         watching: watchingRef.current,
         page: pageRef.current,
         activity,
+        listening: hidden ? null : listeningRef.current,
       };
       // Everyone on the relay gets every update straight away.
       const viaRelay = sockRef.current.send({ t: "p", p: body });
@@ -1090,8 +1146,19 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
     };
     add(watching, { name: me.name, color: me.color, me: true });
     for (const p of online) add(p.watching, { name: p.name, color: p.color, me: false });
-    return [...byId.values()];
-  }, [watching, online, committed, rowsById, me.name, me.color, page, pages]);
+    // Songs people are playing on Spotify (same song: one row with everyone on it).
+    const songs = new Map<string, PlayingItem>();
+    const addSong = (l: Listening | null, person: { name: string; color: string; me: boolean }) => {
+      if (!l) return;
+      const key = `spotify:${l.url ?? l.title}`;
+      const item = songs.get(key) ?? { id: key, title: l.title, kind: "spotify" as const, people: [], elsewhere: null, spotify: l };
+      item.people.push(person);
+      songs.set(key, item);
+    };
+    addSong(myTrack, { name: me.name, color: me.color, me: true });
+    for (const p of online) addSong(p.listening, { name: p.name, color: p.color, me: false });
+    return [...byId.values(), ...songs.values()];
+  }, [watching, online, committed, rowsById, me.name, me.color, page, pages, myTrack]);
 
   function jumpToElement(id: string) {
     const row = committed.get(id) ?? rowsById.get(id);
@@ -2749,6 +2816,11 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
                           <span className="avatar online-ring" style={{ background: p.color, color: textOn(p.color) }}>
                             {initials(p.name)}
                           </span>
+                          {p.listening && (
+                            <span className="listening-dot" title={`Listening to ${p.listening.title} by ${p.listening.artists}`}>
+                              <Icon name="music" size={9} strokeWidth={3} />
+                            </span>
+                          )}
                         </button>
                       ))}
                       {online.length > 4 && <span className="avatar more" title={online.slice(4).map((p) => p.name).join(", ")}>+{online.length - 4}</span>}
@@ -2926,6 +2998,45 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
                   <span className="muted">Videos and voice notes get quieter the further you are from them.</span>
                 </span>
               </label>
+              {!viewOnly && (
+                <div className="spotify-row">
+                  <span className="field-label">
+                    <Icon name="music" size={14} /> Spotify
+                  </span>
+                  {spotifyLinked ? (
+                    <>
+                      <label className="toggle-row">
+                        <input
+                          type="checkbox"
+                          checked={shareSpotify}
+                          onChange={(e) => {
+                            setShareSpotify(e.target.checked);
+                            setSharingSpotify(e.target.checked);
+                          }}
+                        />
+                        <span>
+                          <strong>Share what I&apos;m listening to</strong>
+                          <span className="muted">{myTrack ? `${myTrack.title} · ${myTrack.artists}` : shareSpotify ? "Nothing playing right now" : "Hidden from the room"}</span>
+                        </span>
+                      </label>
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        onClick={() => {
+                          forgetSpotify();
+                          setSpotifyLinked(false);
+                        }}
+                      >
+                        Disconnect Spotify
+                      </button>
+                    </>
+                  ) : (
+                    <button type="button" className="btn" onClick={connectSpotify}>
+                      <Icon name="music" size={18} /> Share what I&apos;m listening to
+                    </button>
+                  )}
+                </div>
+              )}
               <h3>You</h3>
               <button type="button" className="btn" style={{ justifyContent: "flex-start" }} onClick={() => setDialog({ kind: "me" })}>
                 <span className="avatar" style={{ background: me.color, width: 26, height: 26 }}>
@@ -3089,7 +3200,18 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
                   </span>
                 </button>
               )}
-              <NowPlaying items={nowPlaying} onJump={jumpToElement} />
+              <NowPlaying
+                items={nowPlaying}
+                onJump={jumpToElement}
+                onAddSong={
+                  viewOnly
+                    ? undefined
+                    : (url) => {
+                        const link = detectLink(url);
+                        if (link) addLink(link).catch((err) => showToast(err.message));
+                      }
+                }
+              />
               <button
                 type="button"
                 className="status-pill"

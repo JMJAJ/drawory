@@ -3,11 +3,15 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
 import { textOn } from "@/lib/client/identity";
+import { liveProgress } from "@/lib/client/spotify";
+import type { Listening } from "@/lib/types";
 
 export interface PlayingItem {
   id: string;
   title: string;
-  kind: "youtube" | "video" | "audio";
+  kind: "youtube" | "video" | "audio" | "spotify";
+  /** Spotify songs: the song (not on the board). */
+  spotify?: Listening;
   /** Who's playing it, me included. */
   people: { name: string; color: string; me: boolean }[];
   /** Page name when it isn't on the page I'm looking at. */
@@ -15,7 +19,48 @@ export interface PlayingItem {
 }
 
 /** "Now playing" in the bottom bar: what's playing in the room, one click to go there. */
-export function NowPlaying({ items, onJump }: { items: PlayingItem[]; onJump: (id: string) => void }) {
+function SongRow({ it, onAddSong, who }: { it: PlayingItem; onAddSong?: (url: string) => void; who: string }) {
+  const s = it.spotify!;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const pct = s.duration ? (liveProgress(s, now) / s.duration) * 100 : 0;
+  return (
+    <div className="now-item song">
+      {s.image ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img className="song-art" src={s.image} alt="" />
+      ) : (
+        <span className="song-art" />
+      )}
+      <span className="now-item-text">
+        <strong>{s.title}</strong>
+        <span className="muted">
+          {s.artists} · {who}
+        </span>
+        <span className="song-bar">
+          <span style={{ width: `${pct}%` }} />
+        </span>
+      </span>
+      <span className="song-actions">
+        {s.url && (
+          <a className="icon-btn sm" href={s.url} target="_blank" rel="noopener noreferrer" aria-label={`Open ${s.title} in Spotify`} title="Open in Spotify">
+            <Icon name="external" size={16} />
+          </a>
+        )}
+        {s.url && onAddSong && (
+          <button type="button" className="icon-btn sm" aria-label={`Put ${s.title} on the board`} title="Put it on the board" onClick={() => onAddSong(s.url!)}>
+            <Icon name="plus" size={16} />
+          </button>
+        )}
+      </span>
+    </div>
+  );
+}
+
+export function NowPlaying({ items, onJump, onAddSong }: { items: PlayingItem[]; onJump: (id: string) => void; onAddSong?: (url: string) => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -35,9 +80,9 @@ export function NowPlaying({ items, onJump }: { items: PlayingItem[]; onJump: (i
       <button
         type="button"
         className="now-pill"
-        aria-expanded={items.length > 1 ? open : undefined}
-        title={items.length > 1 ? "See everything playing" : `Go to ${first.title}`}
-        onClick={() => (items.length > 1 ? setOpen((o) => !o) : onJump(first.id))}
+        aria-expanded={items.length > 1 || first.kind === "spotify" ? open : undefined}
+        title={items.length > 1 || first.kind === "spotify" ? "See everything playing" : `Go to ${first.title}`}
+        onClick={() => (items.length > 1 || first.kind === "spotify" ? setOpen((o) => !o) : onJump(first.id))}
       >
         <span className="eq" aria-hidden="true">
           <i />
@@ -45,13 +90,16 @@ export function NowPlaying({ items, onJump }: { items: PlayingItem[]; onJump: (i
           <i />
         </span>
         <span className="now-text">
-          <span className="now-label">{items.length > 1 ? `${items.length} playing` : "Now playing"}</span>
+          <span className="now-label">{items.length > 1 ? `${items.length} playing` : first.kind === "spotify" ? "Listening" : "Now playing"}</span>
           <span className="now-title">{first.title}</span>
         </span>
       </button>
       {open && (
         <div className="now-pop surface" role="dialog" aria-label="Playing now">
-          {items.map((it) => (
+          {items.map((it) =>
+            it.kind === "spotify" ? (
+              <SongRow key={it.id} it={it} onAddSong={onAddSong} who={who(it.people)} />
+            ) : (
             <button
               key={it.id}
               type="button"
@@ -77,7 +125,8 @@ export function NowPlaying({ items, onJump }: { items: PlayingItem[]; onJump: (i
                 ))}
               </span>
             </button>
-          ))}
+            ),
+          )}
         </div>
       )}
     </div>

@@ -131,7 +131,20 @@ export interface PresenceRow {
   watching: string | null;
   page: string | null;
   activity: Activity | null;
+  /** What they're playing on Spotify, if they share it. */
+  listening: Listening | null;
   updated_at: Date;
+}
+
+/** A song someone is playing on Spotify. at: when progress was measured (their clock). */
+export interface Listening {
+  title: string;
+  artists: string;
+  image: string | null;
+  url: string | null;
+  progress: number;
+  duration: number;
+  at: number;
 }
 
 /**

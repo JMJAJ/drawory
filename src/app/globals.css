@@ -1379,3 +1379,17 @@ textarea.sticky-text { border: 0; outline: none; resize: none; background: trans
 .emoji-cell:hover { background: var(--soft); }
 .emoji-cell img { width: 30px; height: 30px; object-fit: contain; }
 .chatbox .emoji-grid, .win-chat .emoji-grid { pointer-events: auto; }
+
+/* ---------- Spotify ---------- */
+.spotify-row { display: flex; flex-direction: column; gap: 6px; }
+.spotify-row .field-label { display: inline-flex; align-items: center; gap: 6px; }
+.person { position: relative; }
+.listening-dot {
+  position: absolute; right: -2px; bottom: -2px; width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center;
+  background: #1db954; color: #04130a; border: 2px solid var(--surface); pointer-events: none;
+}
+.now-item.song { cursor: default; }
+.song-art { width: 40px; height: 40px; border-radius: 6px; object-fit: cover; flex: none; background: var(--soft); }
+.song-bar { display: block; height: 3px; border-radius: 2px; background: var(--track); margin-top: 4px; overflow: hidden; }
+.song-bar span { display: block; height: 100%; background: #1db954; transition: width 1s linear; }
+.song-actions { display: flex; flex: none; }

@@ -17,14 +17,16 @@ export const POST = handler<Ctx>(async (req, { params }) => {
   // What they're doing right now; small by design (the client trims long strokes).
   const activityJson = b.activity && typeof b.activity === "object" ? JSON.stringify(b.activity) : null;
   if (activityJson && activityJson.length > 12_000) throw new HttpError(413, "Activity too large");
+  const listeningJson = b.listening && typeof b.listening === "object" ? JSON.stringify(b.listening) : null;
+  if (listeningJson && listeningJson.length > 2_000) throw new HttpError(413, "Song too long");
 
   await pool.query(
-    `insert into presence (board_id, user_id, name, color, cursor_x, cursor_y, view_x, view_y, view_w, view_h, zoom, tool, watching, activity, page, updated_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())
+    `insert into presence (board_id, user_id, name, color, cursor_x, cursor_y, view_x, view_y, view_w, view_h, zoom, tool, watching, activity, page, listening, updated_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, now())
      on conflict (board_id, user_id) do update set
        name = excluded.name, color = excluded.color, cursor_x = excluded.cursor_x, cursor_y = excluded.cursor_y,
        view_x = excluded.view_x, view_y = excluded.view_y, view_w = excluded.view_w, view_h = excluded.view_h,
-       zoom = excluded.zoom, tool = excluded.tool, watching = excluded.watching, activity = excluded.activity, page = excluded.page, updated_at = now()`,
+       zoom = excluded.zoom, tool = excluded.tool, watching = excluded.watching, activity = excluded.activity, page = excluded.page, listening = excluded.listening, updated_at = now()`,
     [
       boardId,
       userId,
@@ -41,6 +43,7 @@ export const POST = handler<Ctx>(async (req, { params }) => {
       watching,
       activityJson,
       cleanString(b.page, 24) || null,
+      listeningJson,
     ],
   );
   return Response.json({ now: Date.now() });

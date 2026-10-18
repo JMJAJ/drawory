@@ -134,3 +134,13 @@ alter table messages add column if not exists reactions jsonb not null default '
 -- A second code that only lets people look (no drawing, no chat), and room settings.
 alter table boards add column if not exists view_code text unique;
 alter table boards add column if not exists settings jsonb not null default '{}'::jsonb;
+
+-- Spotify "now listening": a private key per browser that linked an account, and what each person shares.
+create table if not exists spotify_links (
+  key text primary key,
+  refresh_token text not null,
+  access_token text,
+  expires_at timestamptz,
+  created_at timestamptz not null default now()
+);
+alter table presence add column if not exists listening jsonb;
