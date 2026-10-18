@@ -7,7 +7,7 @@ export interface Camera {
 }
 
 export const MIN_ZOOM = 0.08;
-export const MAX_ZOOM = 4;
+export const MAX_ZOOM = 8;
 export const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
 
 /** Stroke colors. "ink" follows the theme so it reads in day and night. */

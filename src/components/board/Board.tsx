@@ -38,6 +38,7 @@ import { ElementView, StrokeSvg, type RemoteMark } from "./ElementView";
 import { RemoteCursor } from "./RemoteCursor";
 import { MemoryLane } from "./MemoryLane";
 import { StickerTray } from "./StickerTray";
+import { ZoomControl } from "./ZoomControl";
 import { useBoardSync, type SyncStatus } from "./sync";
 import { useRoomSocket } from "./socket";
 import type { Sticker } from "@/lib/stickers";
@@ -114,6 +115,23 @@ async function withRetry<T>(fn: () => Promise<T>) {
     }
   }
   return fn();
+}
+
+/**
+ * Next animation frame, or a short timer if frames don't come (a tab the browser isn't drawing,
+ * some embedded browsers), so an animation always finishes instead of freezing halfway.
+ */
+function nextFrame(fn: (t: number) => void) {
+  let done = false;
+  const run = () => {
+    if (done) return;
+    done = true;
+    cancelAnimationFrame(raf);
+    clearTimeout(timer);
+    fn(performance.now());
+  };
+  const raf = requestAnimationFrame(run);
+  const timer = setTimeout(run, 50);
 }
 
 function relativeTime(date: Date, now: number) {
@@ -319,11 +337,59 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
           y: start.y + (target.y - start.y) * e,
           zoom: start.zoom + (target.zoom - start.zoom) * e,
         });
-        if (k < 1) requestAnimationFrame(step);
+        if (k < 1) nextFrame(step);
       };
-      requestAnimationFrame(step);
+      nextFrame(step);
     },
     [setCamera],
+  );
+  /**
+   * Glides the zoom toward a target, keeping the point under (sx, sy) still. Calls made while it's
+   * moving just retarget it, so fast wheel notches add up smoothly instead of stacking jumps.
+   */
+  const zoomAnim = useRef<{ target: number; sx: number; sy: number } | null>(null);
+  const smoothZoomTo = useCallback(
+    (target: number, sx = window.innerWidth / 2, sy = window.innerHeight / 2) => {
+      target = clampZoom(target);
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        zoomAnim.current = null;
+        zoomAt(sx, sy, target);
+        return;
+      }
+      if (zoomAnim.current) {
+        Object.assign(zoomAnim.current, { target, sx, sy });
+        return;
+      }
+      const anim = { target, sx, sy };
+      zoomAnim.current = anim;
+      let last = performance.now();
+      const step = (t: number) => {
+        if (zoomAnim.current !== anim) return; // cancelled by a direct zoom
+        const dt = Math.min(50, t - last);
+        last = t;
+        // Ease in log space, so zooming in and out feel the same.
+        const from = Math.log(cam.current.zoom);
+        const to = Math.log(anim.target);
+        const k = 1 - Math.exp(-dt / 60);
+        const done = Math.abs(to - from) < 0.002;
+        zoomAt(anim.sx, anim.sy, done ? anim.target : Math.exp(from + (to - from) * k));
+        if (done) zoomAnim.current = null;
+        else nextFrame(step);
+      };
+      nextFrame(step);
+    },
+    [zoomAt],
+  );
+  /** Where the zoom is heading (mid-glide) or is. Steps build on this, so quick presses add up. */
+  const zoomGoal = useCallback(() => zoomAnim.current?.target ?? cam.current.zoom, []);
+  /** Zooms to the next step: 20% per press, and to round levels when close to one. */
+  const stepZoom = useCallback(
+    (direction: 1 | -1, sx?: number, sy?: number) => {
+      const next = zoomGoal() * (direction > 0 ? 1.2 : 1 / 1.2);
+      const round = [0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8].find((r) => Math.abs(Math.log(r / next)) < 0.06);
+      smoothZoomTo(round ?? next, sx, sy);
+    },
+    [smoothZoomTo, zoomGoal],
   );
   const centerWorld = useCallback(() => toWorld(window.innerWidth / 2, window.innerHeight / 2), [toWorld]);
   const nextZ = useCallback(() => {
@@ -1086,6 +1152,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         const d = Math.hypot(a.x - b.x, a.y - b.y);
         const mx = (a.x + b.x) / 2;
         const my = (a.y + b.y) / 2;
+        zoomAnim.current = null;
         const z = clampZoom(g.cam.zoom * (d / Math.max(g.d0, 1)));
         const wx = (g.mx - g.cam.x) / g.cam.zoom;
         const wy = (g.my - g.cam.y) / g.cam.zoom;
@@ -1249,7 +1316,17 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       e.preventDefault();
       setFollowing(false);
       if (e.ctrlKey || e.metaKey) {
-        zoomAt(e.clientX, e.clientY, cam.current.zoom * Math.exp(-e.deltaY * 0.01));
+        // Lines/pages to pixels, so every mouse and browser behaves alike.
+        const dy = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1);
+        if (Math.abs(dy) < 40) {
+          // Trackpad pinch: many small deltas. Follow the fingers exactly.
+          zoomAnim.current = null;
+          zoomAt(e.clientX, e.clientY, cam.current.zoom * Math.exp(-dy * 0.01));
+        } else {
+          // Mouse wheel notch: 10% per notch, gliding there.
+          const notches = Math.max(1, Math.round(Math.abs(dy) / 100));
+          smoothZoomTo(zoomGoal() * Math.pow(dy > 0 ? 1 / 1.1 : 1.1, notches), e.clientX, e.clientY);
+        }
       } else {
         const c = cam.current;
         setCamera({ ...c, x: c.x - (e.shiftKey ? e.deltaY : e.deltaX), y: c.y - (e.shiftKey ? 0 : e.deltaY) });
@@ -1257,7 +1334,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [zoomAt, setCamera]);
+  }, [zoomAt, setCamera, smoothZoomTo, zoomGoal]);
 
   /* ---------- Keyboard, paste, drop ---------- */
   useEffect(() => {
@@ -1273,10 +1350,19 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         redo();
       } else if (mod && (e.key === "=" || e.key === "+")) {
         e.preventDefault();
-        zoomAt(window.innerWidth / 2, window.innerHeight / 2, cam.current.zoom * 1.2);
+        stepZoom(1);
       } else if (mod && e.key === "-") {
         e.preventDefault();
-        zoomAt(window.innerWidth / 2, window.innerHeight / 2, cam.current.zoom / 1.2);
+        stepZoom(-1);
+      } else if (mod && e.key === "0") {
+        e.preventDefault();
+        smoothZoomTo(1);
+      } else if (e.shiftKey && !mod && e.code === "Digit1") {
+        e.preventDefault();
+        fitAll();
+      } else if (e.shiftKey && !mod && e.code === "Digit2") {
+        e.preventDefault();
+        fitSelection();
       } else if (mod && e.key.toLowerCase() === "a" && !laneOpen) {
         e.preventDefault();
         setTool("select");
@@ -1504,9 +1590,17 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   }
 
   function fitAll() {
+    zoomAnim.current = null;
     const all = unionBounds(rows);
     if (all) flyTo(cameraFor(all, window.innerWidth, window.innerHeight));
     else flyTo({ x: window.innerWidth / 2, y: window.innerHeight / 2, zoom: 1 });
+  }
+
+  function fitSelection() {
+    const box = selectedRows.length ? unionBounds(selectedRows) : null;
+    if (!box) return;
+    zoomAnim.current = null;
+    flyTo(cameraFor(box, window.innerWidth, window.innerHeight));
   }
 
   return (
@@ -1905,15 +1999,17 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
                   <Icon name="redo" size={18} />
                 </button>
                 <div className="ctrl-sep" />
-                <button type="button" className="icon-btn sm zoom-step" aria-label="Zoom out" onClick={() => zoomAt(window.innerWidth / 2, window.innerHeight / 2, camera.zoom / 1.25)}>
-                  <Icon name="minus" size={18} />
-                </button>
-                <button type="button" className="zoom-label" aria-label="Fit everything" title="Fit everything" onClick={fitAll}>
-                  {Math.round(camera.zoom * 100)}%
-                </button>
-                <button type="button" className="icon-btn sm zoom-step" aria-label="Zoom in" onClick={() => zoomAt(window.innerWidth / 2, window.innerHeight / 2, camera.zoom * 1.25)}>
-                  <Icon name="plus" size={18} />
-                </button>
+                <ZoomControl
+                  zoom={camera.zoom}
+                  onSet={(z) => {
+                    zoomAnim.current = null;
+                    zoomAt(window.innerWidth / 2, window.innerHeight / 2, z);
+                  }}
+                  onGlide={(z) => smoothZoomTo(z)}
+                  onStep={(d) => stepZoom(d)}
+                  onFitAll={fitAll}
+                  onFitSelection={selectedRows.length ? fitSelection : null}
+                />
               </div>
             </div>
 
