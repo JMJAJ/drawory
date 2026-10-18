@@ -47,6 +47,7 @@ export const RESIZABLE: Partial<Record<ElementType, "free" | "aspect" | "width" 
   chatbox: "free",
   sticky: "free",
   window: "free",
+  game: "free",
 };
 
 /** Heights of auto-sized elements as they last rendered here, so selection and hit tests match. */
@@ -76,7 +77,10 @@ export function bounds(el: Pick<ElementRow, "type" | "data">) {
 type Box = { x: number; y: number; w: number; h: number };
 
 /** Types an arrow can attach to (not strokes, other arrows or areas). */
-export const ATTACHABLE = (t: ElementType) => t !== "stroke" && t !== "arrow" && t !== "place";
+export const ATTACHABLE = (t: ElementType) => t !== "stroke" && t !== "arrow" && t !== "place" && t !== "game";
+
+/** Areas: big boxes that carry what's inside them when moved (places and game areas). */
+export const isArea = (t: ElementType) => t === "place" || t === "game";
 
 /** Where a line from a box's centre towards a point leaves the box (plus a small gap). */
 function edgePoint(b: Box, toward: [number, number], gap: number): [number, number] {

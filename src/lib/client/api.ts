@@ -39,13 +39,16 @@ export const api = {
   board(boardId: string) {
     return request<BoardMeta>(base(boardId));
   },
+  addEmoji(boardId: string, body: { name: string; url: string; from: string }) {
+    return request<{ emojis: { name: string; url: string }[] }>(`${base(boardId)}/emojis`, json(body));
+  },
   viewLink(boardId: string, opts: { reset?: boolean; off?: boolean } = {}) {
     return request<{ code: string | null }>(`${base(boardId)}/view-link`, json(opts));
   },
   createRoom(name: string, by?: string) {
     return request<{ id: string; name: string }>("/api/rooms", json({ name, by }));
   },
-  updateBoard(boardId: string, patch: Partial<BoardMeta> & { from: string }) {
+  updateBoard(boardId: string, patch: Partial<BoardMeta> & { from: string; focusIf?: number }) {
     return request<BoardMeta>(base(boardId), json(patch, "PATCH"));
   },
   applyOps(boardId: string, ops: ElementOp[], author: string) {
@@ -62,7 +65,7 @@ export const api = {
       cache: "no-store",
     });
   },
-  signal(boardId: string, kind: "wave" | "yt", from: string, payload: Record<string, unknown> = {}) {
+  signal(boardId: string, kind: "wave" | "yt" | "summon", from: string, payload: Record<string, unknown> = {}) {
     return request<void>(`${base(boardId)}/signals`, json({ kind, from, payload }));
   },
   sendMessage(boardId: string, body: { user_id: string; name: string; color: string; body: string; thread?: string | null }) {

@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
 import { initials, textOn, type Me } from "@/lib/client/identity";
-import { EMOJIS, findEmoji, searchEmojis } from "@/lib/emojis";
+import { EMOJIS, findEmoji, searchEmojis, type Emoji } from "@/lib/emojis";
 import { mentions, REACTIONS } from "@/lib/reactions";
 import { STICKERS } from "@/lib/stickers";
 import type { ChatRow } from "@/lib/types";
@@ -18,13 +18,13 @@ function stickerIn(body: string) {
 /** @names and :emoji: in a message. */
 const TOKENS = /(@[\p{L}\p{N}_.-]+|:[A-Za-z0-9_]{2,40}:)/gu;
 
-function Bubble({ body }: { body: string }) {
+function Bubble({ body, room }: { body: string; room: readonly Emoji[] }) {
   const sticker = stickerIn(body);
   if (!sticker) {
     const pieces = body.split(TOKENS).map((p, i) => {
       if (i % 2 === 0) return { text: p };
       if (p.startsWith("@")) return { mention: p };
-      const emoji = findEmoji(p.slice(1, -1));
+      const emoji = findEmoji(p.slice(1, -1), room);
       return emoji ? { emoji, code: p } : { text: p };
     });
     // A message of just a few emojis shows them big, like Discord does.
@@ -85,6 +85,7 @@ export function ChatThread({
   onSeen,
   people = [],
   highlight,
+  roomEmojis = [],
   readOnly,
   autoFocus,
   inputId,
@@ -100,6 +101,8 @@ export function ChatThread({
   people?: readonly { name: string; color: string }[];
   /** A message to scroll to and flash (from "jump to message"). */
   highlight?: string | null;
+  /** Emojis this room made from drawings. */
+  roomEmojis?: readonly Emoji[];
   readOnly?: boolean;
   autoFocus?: boolean;
   inputId: string;
@@ -162,7 +165,7 @@ export function ChatThread({
   type Suggestion = { kind: "person"; name: string; color: string } | { kind: "emoji"; name: string; url: string };
   const suggestions: Suggestion[] =
     typingEmoji !== null
-      ? searchEmojis(typingEmoji, 8).map((e) => ({ kind: "emoji" as const, ...e }))
+      ? searchEmojis(typingEmoji, 8, roomEmojis).map((e) => ({ kind: "emoji" as const, ...e }))
       : typingMention === null
         ? []
         : [{ name: "everyone", color: "var(--muted)" }, ...people]
@@ -174,7 +177,7 @@ export function ChatThread({
     else setDraft((d) => d.replace(/@([\p{L}\p{N}_.-]*)$/u, `@${s.name.split(/\s+/)[0]} `));
     document.getElementById(inputId)?.focus();
   }
-  const pickerList = emojiPicker ? (emojiQuery.trim() ? searchEmojis(emojiQuery.trim(), 400) : EMOJIS) : [];
+  const pickerList = emojiPicker ? (emojiQuery.trim() ? searchEmojis(emojiQuery.trim(), 400, roomEmojis) : [...roomEmojis, ...EMOJIS]) : [];
 
   function send(text = draft) {
     const body = text.trim();
@@ -212,7 +215,7 @@ export function ChatThread({
               )}
               {!grouped && mine && <div className="chat-who mine-time muted">{time(m.created_at)}</div>}
               <div className="chat-line">
-                <Bubble body={m.body} />
+                <Bubble body={m.body} room={roomEmojis} />
                 {onReact && !readOnly && (
                   <button
                     type="button"
@@ -266,7 +269,7 @@ export function ChatThread({
         })}
         {waiting.map((p) => (
           <div key={p.key} className={`chat-msg mine${p.failed ? " failed" : " sending"}`}>
-            <Bubble body={p.body} />
+            <Bubble body={p.body} room={roomEmojis} />
             {p.failed && (
               <button
                 type="button"

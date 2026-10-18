@@ -7,7 +7,7 @@ type Ctx = { params: Promise<{ boardId: string }> };
 
 const TYPES: ElementType[] = [
   "stroke", "rect", "ellipse", "arrow", "text", "note", "image", "video",
-  "audio", "youtube", "embed", "link", "capsule", "place", "sticker", "chatbox", "sticky", "window",
+  "audio", "youtube", "embed", "link", "capsule", "place", "sticker", "chatbox", "sticky", "window", "game",
 ];
 const MAX_DATA = 400_000;
 const MAX_OPS = 200;
@@ -115,7 +115,7 @@ async function applyBatch(db: import("pg").PoolClient, boardId: string, ops: unk
        delete from messages
        where board_id = $1
          and (
-           thread in (select id from del where type = 'chatbox' and id::text not in (select id from kept_threads))
+           thread in (select id from del where type in ('chatbox', 'game') and id::text not in (select id from kept_threads))
            or thread::text in (select id from gone_blocks)
          )
      ),

@@ -7,7 +7,7 @@ import { textOn } from "@/lib/client/identity";
  * Someone else's cursor. Updates arrive a few times a second; between them the cursor glides
  * toward the latest position every frame, so it moves smoothly instead of jumping.
  */
-export function RemoteCursor({ x, y, zoom, color, label }: { x: number; y: number; zoom: number; color: string; label: string }) {
+export function RemoteCursor({ x, y, zoom, color, label, say }: { x: number; y: number; zoom: number; color: string; label: string; say?: string | null }) {
   const ref = useRef<HTMLDivElement>(null);
   const target = useRef({ x, y });
   const pos = useRef<{ x: number; y: number } | null>(null);
@@ -65,6 +65,11 @@ export function RemoteCursor({ x, y, zoom, color, label }: { x: number; y: numbe
       <div className="cursor-label" style={{ background: color, color: textOn(color) }}>
         {label}
       </div>
+      {say && (
+        <div className="cursor-say" style={{ background: color, color: textOn(color) }}>
+          {say}
+        </div>
+      )}
     </div>
   );
 }

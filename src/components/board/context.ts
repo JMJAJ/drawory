@@ -31,6 +31,12 @@ export interface BoardCtx {
   markSeen(thread: string, newestId: string): void;
   /** Messages from others I haven't seen in a conversation, and whether one mentions me. */
   unread(thread: string): Unread;
+  /** Emojis this room made from drawings. */
+  roomEmojis: readonly { name: string; url: string }[];
+  /** Ids of everyone online (me included). */
+  onlineIds: readonly string[];
+  /** Removes what's drawn inside an area (a new Pictionary round). */
+  clearInside(areaId: string): void;
   /** People online to @mention. */
   people: readonly { name: string; color: string }[];
   /** A message to scroll to and flash ("jump to message"). */

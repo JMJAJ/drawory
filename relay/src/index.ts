@@ -131,7 +131,7 @@ export class Room extends DurableObject<Env> {
         this.broadcast(ws, { t: "p", p: p.state, at: now });
         break;
       case "s":
-        if (msg.kind !== "wave" && msg.kind !== "yt") return;
+        if (msg.kind !== "wave" && msg.kind !== "yt" && msg.kind !== "summon") return;
         this.broadcast(ws, { t: "s", kind: msg.kind, from: p.user, payload: msg.payload ?? {}, at: now });
         break;
       case "ping":

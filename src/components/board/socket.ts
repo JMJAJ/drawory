@@ -47,6 +47,7 @@ function toRow(p: Partial<PresenceRow> & { user_id: string }, at: number): Prese
     page: typeof p.page === "string" ? p.page : null,
     activity: p.activity && typeof p.activity === "object" ? p.activity : null,
     listening: p.listening && typeof p.listening === "object" ? p.listening : null,
+    say: typeof p.say === "string" ? p.say.slice(0, 140) : null,
     updated_at: new Date(at),
   };
 }

@@ -1043,6 +1043,7 @@ function ChatBlock({ block }: { block: WinBlock }) {
         onSeen={(id) => ctx.markSeen(block.id, id)}
         people={ctx.people}
         highlight={ctx.highlightMsg}
+        roomEmojis={ctx.roomEmojis}
         inputId={`win-chat-${block.id}`}
         placeholder="Message"
       />

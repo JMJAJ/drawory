@@ -10,8 +10,10 @@ import { stickerSrc } from "@/lib/stickers";
 import type { ElementRow } from "@/lib/types";
 import { ChatThread } from "./ChatThread";
 import { WindowView } from "./WindowView";
+import { GameView } from "./GameView";
 import { PhotoFrame } from "./PhotoEditor";
 import { useBoard } from "./context";
+import { registerVideo, videoTime } from "@/lib/client/videoTimes";
 import { loadYouTube, type YTPlayer } from "./youtube";
 
 function svgPathFromStroke(stroke: number[][]) {
@@ -52,6 +54,26 @@ export function StrokeSvg({ row }: { row: ElementRow }) {
     <svg className={`el-svg${d.highlight ? " highlight" : ""}`} width={d.w} height={d.h} style={fade}>
       <path className="hit" d={path} fill={colorValue(d.color)} />
     </svg>
+  );
+}
+
+/** A drawing pinned to a moment of a video: it shows while the video is at that moment. */
+function VideoNote({ row }: { row: ElementRow }) {
+  const at = row.data.videoAt!;
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    const check = () => {
+      const t = videoTime(at.id);
+      setOn(t !== null && t >= at.t - 0.3 && t <= at.t + 4);
+    };
+    check();
+    const timer = setInterval(check, 250);
+    return () => clearInterval(timer);
+  }, [at.id, at.t]);
+  return (
+    <div className={`video-note${on ? " on" : ""}`}>
+      <StrokeSvg row={row} />
+    </div>
   );
 }
 
@@ -615,6 +637,7 @@ function YouTubeView({ row }: { row: ElementRow }) {
   useEffect(() => {
     if (!d.videoId || !host.current) return;
     let cancelled = false;
+    let unregisterTime = () => {};
     const mount = document.createElement("div");
     host.current.appendChild(mount);
     loadYouTube().then((YT) => {
@@ -629,6 +652,12 @@ function YouTubeView({ row }: { row: ElementRow }) {
           onReady: () => {
             const p = player.current;
             if (!p) return;
+            unregisterTime = registerVideo(row.id, () => {
+              const q = player.current;
+              const s = q?.getPlayerState?.();
+              // Only while it's playing or paused partway (not before it starts).
+              return q && (s === 1 || s === 2) ? q.getCurrentTime() : null;
+            });
             keeper.current = volumeKeeper(() => p.getVolume() / 100, (v) => p.setVolume(Math.round(v * 100)));
             keeper.current(factor.current);
           },
@@ -659,6 +688,7 @@ function YouTubeView({ row }: { row: ElementRow }) {
     });
     return () => {
       cancelled = true;
+      unregisterTime();
       player.current?.destroy();
       player.current = null;
       mount.remove();
@@ -880,6 +910,7 @@ function ChatBoxView({ row, editing }: { row: ElementRow; editing: boolean }) {
         onSeen={(id) => ctx.markSeen(row.id, id)}
         people={ctx.people}
         highlight={ctx.highlightMsg}
+        roomEmojis={ctx.roomEmojis}
         inputId={`chatbox-${row.id}`}
         placeholder="Message"
       />
@@ -993,7 +1024,7 @@ export const ElementView = memo(function ElementView({ row, selected, solo, edit
   let content: React.ReactNode;
   switch (row.type) {
     case "stroke":
-      content = <StrokeSvg row={row} />;
+      content = row.data.videoAt ? <VideoNote row={row} /> : <StrokeSvg row={row} />;
       break;
     case "rect":
     case "ellipse":
@@ -1029,6 +1060,9 @@ export const ElementView = memo(function ElementView({ row, selected, solo, edit
     case "capsule":
       content = <CapsuleView row={row} />;
       break;
+    case "game":
+      content = <GameView row={row} />;
+      break;
     case "place":
       content = <PlaceView row={row} />;
       break;
@@ -1059,11 +1093,11 @@ export const ElementView = memo(function ElementView({ row, selected, solo, edit
         // The canvas layer has no width, so text must size itself to its content.
         width: autoWidth ? "max-content" : b.w,
         height: autoHeight ? undefined : b.h,
-        zIndex: row.type === "place" ? 0 : Math.round(row.z) + 1,
+        zIndex: row.type === "place" || row.type === "game" ? 0 : Math.round(row.z) + 1,
         whiteSpace: autoWidth ? "pre" : undefined,
         opacity: row.data.opacity && row.data.opacity < 1 ? row.data.opacity : undefined,
         transform: row.data.angle ? `rotate(${row.data.angle}deg)` : undefined,
-        pointerEvents: row.type === "place" ? "none" : undefined,
+        pointerEvents: row.type === "place" || row.type === "game" ? "none" : undefined,
       }}
     >
       {content}
@@ -1073,7 +1107,7 @@ export const ElementView = memo(function ElementView({ row, selected, solo, edit
         </div>
       )}
       {selected && solo && resizable && !row.data.locked && <div className="resize-handle" data-handle="resize" style={{ pointerEvents: "auto" }} />}
-      {selected && solo && !row.data.locked && row.type !== "place" && row.type !== "window" && (
+      {selected && solo && !row.data.locked && row.type !== "place" && row.type !== "window" && row.type !== "game" && (
         <div className="rotate-handle" data-handle="rotate" title="Drag to turn (Shift: 15° steps)" style={{ pointerEvents: "auto" }} />
       )}
       {selected && row.data.locked && (

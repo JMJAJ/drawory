@@ -144,3 +144,9 @@ create table if not exists spotify_links (
   created_at timestamptz not null default now()
 );
 alter table presence add column if not exists listening jsonb;
+
+-- Emojis a room made from its own drawings: [{ name, url, by }].
+alter table boards add column if not exists emojis jsonb not null default '[]'::jsonb;
+
+-- The room's shared focus timer (null when off).
+alter table boards add column if not exists focus jsonb;

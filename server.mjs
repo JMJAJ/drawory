@@ -118,7 +118,7 @@ wss.on("connection", (ws, _req, meta) => {
       }
       case "s": {
         // Signals: waves and synced video. `sid` lets clients drop the copy that also comes via Postgres.
-        if (msg.kind !== "wave" && msg.kind !== "yt") return;
+        if (msg.kind !== "wave" && msg.kind !== "yt" && msg.kind !== "summon") return;
         broadcast(ws, { t: "s", kind: msg.kind, from: m.user, payload: msg.payload ?? {}, at: now });
         break;
       }

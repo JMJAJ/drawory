@@ -122,17 +122,25 @@ const LOWER = new Map<string, Emoji>();
 for (const e of EMOJIS) if (!LOWER.has(e.name.toLowerCase())) LOWER.set(e.name.toLowerCase(), e);
 
 /** The emoji for :name: (exact, then any capitals, then the first whose name starts with it). */
-export function findEmoji(name: string): Emoji | undefined {
+export function findEmoji(name: string, room: readonly Emoji[] = []): Emoji | undefined {
   const lower = name.toLowerCase();
-  return EXACT.get(name) ?? LOWER.get(lower) ?? (lower.length >= 3 ? EMOJIS.find((e) => e.name.toLowerCase().startsWith(lower)) : undefined);
+  // The room's own emojis (made from drawings) come first.
+  const mine = room.find((e) => e.name === name) ?? room.find((e) => e.name.toLowerCase() === lower);
+  if (mine) return mine;
+  return (
+    EXACT.get(name) ??
+    LOWER.get(lower) ??
+    (lower.length >= 3 ? [...room, ...EMOJIS].find((e) => e.name.toLowerCase().startsWith(lower)) : undefined)
+  );
 }
 
 /** Emojis whose names contain what's typed, best matches (starting with it) first. */
-export function searchEmojis(q: string, limit = 8) {
+export function searchEmojis(q: string, limit = 8, room: readonly Emoji[] = []) {
+  const all = [...room, ...EMOJIS];
   const lower = q.toLowerCase();
-  if (!lower) return EMOJIS.slice(0, limit);
-  const starts = EMOJIS.filter((e) => e.name.toLowerCase().startsWith(lower));
-  const has = EMOJIS.filter((e) => !e.name.toLowerCase().startsWith(lower) && e.name.toLowerCase().includes(lower));
+  if (!lower) return all.slice(0, limit);
+  const starts = all.filter((e) => e.name.toLowerCase().startsWith(lower));
+  const has = all.filter((e) => !e.name.toLowerCase().startsWith(lower) && e.name.toLowerCase().includes(lower));
   return [...starts, ...has].slice(0, limit);
 }
 

@@ -3,7 +3,7 @@ import { boardIdFrom, cleanString, handler, HttpError } from "@/lib/server/http"
 
 type Ctx = { params: Promise<{ boardId: string }> };
 // "heart" is kept so older open tabs still work; new ones send "wave".
-const KINDS = ["wave", "heart", "yt"];
+const KINDS = ["wave", "heart", "yt", "summon"];
 
 /** Ephemeral nudges (waves, synced video controls). Old ones are pruned as new ones arrive. */
 export const POST = handler<Ctx>(async (req, { params }) => {

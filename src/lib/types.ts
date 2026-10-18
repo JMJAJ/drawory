@@ -18,7 +18,8 @@ export type ElementType =
   | "sticker"
   | "chatbox"
   | "sticky"
-  | "window";
+  | "window"
+  | "game";
 
 export interface ElementData {
   x: number;
@@ -70,6 +71,10 @@ export interface ElementData {
   /** Photos: the part shown (fractions of the original) and quarter turns. */
   crop?: { x: number; y: number; w: number; h: number };
   rotate?: number;
+  /** A note drawn on a Watch together video: which video, and the second it belongs to. */
+  videoAt?: { id: string; t: number };
+  /** Game areas: the Pictionary state. */
+  game?: import("./game").GameState;
   /** A YouTube card playing a window's music queue (the block id). */
   queueOf?: string;
   /** Locked items can't be moved, resized, erased, edited or deleted until unlocked. */
@@ -146,6 +151,8 @@ export interface PresenceRow {
   activity: Activity | null;
   /** What they're playing on Spotify, if they share it. */
   listening: Listening | null;
+  /** Cursor chat: words shown next to their cursor for a few seconds. */
+  say?: string | null;
   updated_at: Date;
 }
 
@@ -178,7 +185,7 @@ export type Activity =
 /** A row of the `signals` live query. int8 ids arrive as strings. */
 export interface SignalRow {
   id: string;
-  kind: "wave" | "heart" | "yt" | "board";
+  kind: "wave" | "heart" | "yt" | "board" | "summon";
   from_user: string;
   payload: Record<string, unknown>;
   created_at: Date;
@@ -187,6 +194,16 @@ export interface SignalRow {
 export interface BoardPage {
   id: string;
   name: string;
+}
+
+export interface FocusState {
+  phase: "focus" | "break";
+  /** When this phase ends (server time); null while paused. */
+  endsAt: number | null;
+  /** Time left when paused (ms). */
+  pausedLeft: number | null;
+  /** Focus sessions finished. */
+  rounds: number;
 }
 
 export interface BoardMeta {
@@ -199,6 +216,10 @@ export interface BoardMeta {
   view_code?: string | null;
   /** Opened with a view-only link. */
   viewOnly?: boolean;
+  /** Emojis made from the room's drawings. */
+  emojis?: { name: string; url: string; by?: string }[];
+  /** The room's shared focus timer, or null when it's off. */
+  focus?: FocusState | null;
 }
 
 export interface HistoryEvent {

@@ -15,6 +15,7 @@ import {
   RESIZABLE,
   snapBox,
   attachArrows,
+  isArea,
   ATTACHABLE,
   STROKE_COLORS,
   STROKE_SIZES,
@@ -27,7 +28,7 @@ import {
 import { displayCode, inviteLink, rememberRoom } from "@/lib/client/rooms";
 import { initials, textOn, type Me } from "@/lib/client/identity";
 import { audioPeaks, detectLink, fitWithin, imageSize, shrinkPhoto, videoSize, type DetectedLink } from "@/lib/client/media";
-import type { Listening } from "@/lib/types";
+import type { FocusState, Listening } from "@/lib/types";
 import type { Activity, BoardMeta, BoardPage, ChatRow, ElementData, ElementOp, ElementRow, ElementType, PresenceRow, WinBlock } from "@/lib/types";
 import { applyEdit, type Edit } from "@/lib/edits";
 import { PagesBar } from "./PagesBar";
@@ -57,6 +58,12 @@ import {
 import { ElementView, StrokeSvg, type RemoteMark } from "./ElementView";
 import { SearchPanel, type SearchHit } from "./SearchPanel";
 import { Minimap } from "./Minimap";
+import { FocusTimer } from "./FocusTimer";
+import { formatVideoTime, videoTime } from "@/lib/client/videoTimes";
+import { recordTimelapse } from "@/lib/client/timelapse";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { SummonBanner } from "./SummonBanner";
+import { EmojiMaker } from "./EmojiMaker";
 import { recognize, sampleSegments, snapAngle, type Recognized } from "@/lib/client/shapes";
 import { densify, eraseFromStroke, inPolygon } from "@/lib/client/erase";
 import { mirrorTransforms, transformData, type MirrorMode } from "@/lib/client/mirror";
@@ -75,7 +82,7 @@ import type { Sticker } from "@/lib/stickers";
 
 type Tool =
   | "hand" | "select" | "lasso" | "pen" | "eraser" | "laser" | "rect" | "ellipse" | "arrow" | "text"
-  | "note" | "sticky" | "sticker" | "chatbox" | "window" | "media" | "youtube" | "voice" | "capsule";
+  | "note" | "sticky" | "sticker" | "chatbox" | "window" | "game" | "media" | "youtube" | "voice" | "capsule";
 
 /** edit: a small change the server applies to its newest copy (votes, ticks), not a whole-card save. */
 type Change = { before: ElementRow | null; after: ElementRow | null; edit?: Edit };
@@ -87,7 +94,7 @@ type Gesture =
   // hold: the timer that straightens the stroke when the pen rests; snapped: the clean shape it became.
   | { kind: "draw"; points: number[][]; hold?: ReturnType<typeof setTimeout>; snapped?: Recognized | null; straight?: boolean }
   | { kind: "shape"; type: "rect" | "ellipse" | "arrow"; ox: number; oy: number }
-  | { kind: "move"; wx: number; wy: number; originals: ElementRow[]; moved: boolean; canDrop: boolean; into?: DropInto | null }
+  | { kind: "move"; wx: number; wy: number; originals: ElementRow[]; moved: boolean; canDrop: boolean; into?: DropInto | null; samples?: number[][] }
   | { kind: "resize"; wx: number; wy: number; original: ElementRow }
   | { kind: "erase"; originals: Map<string, ElementRow> }
   | { kind: "laser"; pts: number[][] }
@@ -117,6 +124,7 @@ const TOOL_GROUPS: { id: Tool; label: string; icon: IconName; key?: string }[][]
     { id: "sticker", label: "Stickers", icon: "sticker", key: "s" },
     { id: "chatbox", label: "Chat box", icon: "chat", key: "c" },
     { id: "window", label: "Window: ranking, lists, chat and more", icon: "window", key: "w" },
+    { id: "game", label: "Pictionary area", icon: "game", key: "g" },
     { id: "media", label: "Photo, video or link", icon: "image" },
     { id: "youtube", label: "Watch together", icon: "youtube" },
     { id: "voice", label: "Voice note", icon: "mic" },
@@ -162,6 +170,10 @@ const CLIP_PREFIX = "drawory-items:";
 const DEFAULT_PAGES: BoardPage[] = [{ id: "main", name: "Page 1" }];
 const pageOf = (r: { data: ElementData }) => r.data.page ?? "main";
 const NO_CHAT: readonly ChatRow[] = [];
+/** What can be turned into an emoji. */
+const EMOJI_TYPES: ElementType[] = ["stroke", "rect", "ellipse", "arrow", "image", "sticker", "text", "sticky"];
+/** Lofi Girl's live radio, for the focus timer. */
+const LOFI_VIDEO = "jfKfPfyJRdk";
 const NO_UNREAD: Unread = { count: 0, mention: false, firstId: null };
 /** Types you can open for editing (double-click, double-tap or the pen button). */
 const EDITABLE: ElementType[] = ["text", "note", "image", "chatbox", "sticky", "window", "rect", "ellipse"];
@@ -305,6 +317,10 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
   >(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [stickersOpen, setStickersOpen] = useState(false);
+  const [emojiFrom, setEmojiFrom] = useState<ElementRow[] | null>(null);
+  // The right-click menu, and what was last copied (for "Paste here").
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  const clipRef = useRef<ElementRow[]>([]);
   const [lasso, setLasso] = useState<number[][] | null>(null);
   const [eraserMode, setEraserMode] = useState<"whole" | "part">("whole");
   // How new rectangles, ellipses and arrows look.
@@ -687,6 +703,24 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
   const [cardDraft, setCardDraft] = useState("");
   const [cardError, setCardError] = useState<string | null>(null);
   const listeningRef = useRef<Listening | null>(null);
+  // Cursor chat (press /): words that float next to my cursor for everyone.
+  const sayRef = useRef<string | null>(null);
+  const sayClear = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const [sayOpen, setSayOpen] = useState(false);
+  const [sayText, setSayText] = useState("");
+  function updateSay(text: string | null, linger = 0) {
+    clearTimeout(sayClear.current);
+    const apply = (t: string | null) => {
+      sayRef.current = t && t.trim() ? t.slice(0, 140) : null;
+      pushPresenceRef.current();
+    };
+    if (linger) {
+      apply(text);
+      sayClear.current = setTimeout(() => apply(null), linger);
+    } else apply(text);
+  }
+  // "Come here": someone wants everyone to look at what they're looking at.
+  const [summon, setSummon] = useState<{ name: string; x: number; y: number; zoom: number; page: string | null } | null>(null);
   // Linked before, or just came back from Spotify's sign-in.
   useEffect(() => {
     const back = takeSpotifyReturn();
@@ -806,6 +840,7 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
         page: pageRef.current,
         activity,
         listening: hidden ? null : listeningRef.current,
+        say: hidden ? null : sayRef.current,
       };
       // Everyone on the relay gets every update straight away.
       const viaRelay = sockRef.current.send({ t: "p", p: body });
@@ -1121,6 +1156,12 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
     [boardId, me.id, showToast],
   );
   const people = useMemo(() => online.map((p) => ({ name: p.name, color: p.color })), [online]);
+  const roomEmojis = useMemo(() => board?.emojis ?? [], [board?.emojis]);
+  const onlineIds = useMemo(() => [me.id, ...online.map((p) => p.user_id)], [me.id, online]);
+  const clearInsideRef = useRef<(id: string) => void>(() => {});
+  useEffect(() => {
+    clearInsideRef.current = clearInside;
+  });
 
   const sendTo = useCallback(
     (thread: string | null, body: string) => api.sendMessage(boardId, { user_id: me.id, name: me.name, color: me.color, body, thread }),
@@ -1169,6 +1210,12 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
         if (cmd.elementId) ytHandlers.current.get(cmd.elementId)?.forEach((h) => h(cmd));
       } else if (kind === "board") {
         loadBoard();
+      } else if (kind === "summon") {
+        const p = othersRef.current.find((o) => o.user_id === from);
+        const n = (k: string) => (typeof payload[k] === "number" ? (payload[k] as number) : NaN);
+        if (Number.isFinite(n("x")) && Number.isFinite(n("y")) && Number.isFinite(n("zoom"))) {
+          setSummon({ name: p?.name ?? "Someone", x: n("x"), y: n("y"), zoom: n("zoom"), page: typeof payload.page === "string" ? payload.page : null });
+        }
       }
     },
     [spawnHearts, showToast, loadBoard],
@@ -1191,13 +1238,71 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
 
   /** Sends over the relay (instant) and the database (reaches everyone, kept briefly). */
   const sendSignal = useCallback(
-    (kind: "wave" | "yt", payload: Record<string, unknown> = {}) => {
+    (kind: "wave" | "yt" | "summon", payload: Record<string, unknown> = {}) => {
       const withSid = { ...payload, sid: newId() };
       sockRef.current.send({ t: "s", kind, payload: withSid });
       return api.signal(boardId, kind, me.id, withSid);
     },
     [boardId, me.id],
   );
+
+  const setFocus = useCallback(
+    (next: FocusState | null, ifEndsAt?: number | null) => {
+      setBoard((b) => (b ? { ...b, focus: next } : b));
+      api
+        .updateBoard(boardId, { focus: next, focusIf: ifEndsAt ?? undefined, from: me.id } as Parameters<typeof api.updateBoard>[1])
+        .then(setBoard, () => showToast("Couldn't update the timer"));
+    },
+    [boardId, me.id, showToast],
+  );
+  /** Lo-fi radio for focusing: a Watch together card near the middle of the view. */
+  function addLofi() {
+    const existing = [...rowsRef.current.values()].find((r) => r.type === "youtube" && r.data.videoId === LOFI_VIDEO);
+    if (existing) return jumpToElement(existing.id);
+    addRow("youtube", { ...placeNear(480, 352), w: 480, videoId: LOFI_VIDEO, title: "Lo-fi radio", url: `https://youtu.be/${LOFI_VIDEO}` });
+  }
+  /** A time-lapse video of this page being made. */
+  async function saveTimelapse() {
+    try {
+      showToast("Making the time-lapse… keep this tab open");
+      const events = await api.history(boardId);
+      let last = 0;
+      const blob = await recordTimelapse(events, page, (p) => {
+        const pct = Math.floor(p * 10) * 10;
+        if (pct !== last) {
+          last = pct;
+          showToast(`Making the time-lapse… ${pct}%`);
+        }
+      });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${(board?.name || "drawory").replace(/[\\/:*?"<>|]+/g, "")} time-lapse.webm`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+      showToast("Time-lapse saved");
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Couldn't make the time-lapse");
+    }
+  }
+
+  /** Brings everyone online to what I'm looking at. */
+  function summonEveryone() {
+    const c = centerWorld();
+    void sendSignal("summon", { x: Math.round(c.x), y: Math.round(c.y), zoom: cam.current.zoom, page }).then(
+      () => showToast("Bringing everyone here"),
+      () => showToast("Couldn't reach everyone"),
+    );
+  }
+  function goToSummon(s: NonNullable<typeof summon>) {
+    setSummon(null);
+    setFollowId(null);
+    const go = () =>
+      flyTo({ zoom: s.zoom, x: window.innerWidth / 2 - s.x * s.zoom, y: window.innerHeight / 2 - s.y * s.zoom });
+    if (s.page && s.page !== page && pages.some((p) => p.id === s.page)) {
+      switchPage(s.page);
+      setTimeout(go, 80);
+    } else go();
+  }
 
   function sendWave(e: React.MouseEvent<HTMLButtonElement>) {
     const r = e.currentTarget.getBoundingClientRect();
@@ -1417,6 +1522,13 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
       setTimeout(() => document.getElementById(`chatbox-${row.id}`)?.focus(), 250);
       return;
     }
+    if (t === "game") {
+      // A Pictionary area: drawings for the game go inside it. Move and resize it like a place.
+      const w = 900, h = 560;
+      addRow("game", { ...placeNear(w, h), w, h, game: { status: "lobby", round: 0, players: [], correct: [] } });
+      setTool("select");
+      return;
+    }
     if (t === "window") {
       // Starts empty, showing templates to pick from.
       addRow("window", { ...placeNear(640, 300), w: 640, title: "Window", blocks: [] });
@@ -1601,9 +1713,9 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
           const ids = new Set(group);
           for (const id of group) {
             const r = rowsRef.current.get(id);
-            if (r?.type !== "place") continue;
+            if (!r || !isArea(r.type)) continue;
             const area = bounds(r);
-            for (const other of rowsRef.current.values()) if (other.type !== "place" && contains(area, bounds(other))) ids.add(other.id);
+            for (const other of rowsRef.current.values()) if (!isArea(other.type) && contains(area, bounds(other))) ids.add(other.id);
           }
           // Locked items stay where they are. An arrow dragged away from what it's attached to lets go.
           const originals = [...ids]
@@ -1645,6 +1757,7 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
         return;
       }
       case "pen": {
+        if (blockedByGame(w.x, w.y)) return;
         const pressure = e.pointerType === "pen" ? e.pressure || 0.5 : 0.5;
         // Shift: a straight line from the start, in 15° steps.
         gesture.current = { kind: "draw", points: [[w.x, w.y, pressure]], straight: e.shiftKey };
@@ -1677,6 +1790,7 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
       case "rect":
       case "ellipse":
       case "arrow":
+        if (blockedByGame(w.x, w.y)) return;
         gesture.current = { kind: "shape", type: tool, ox: w.x, oy: w.y };
         return;
       case "text": {
@@ -1810,6 +1924,8 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
         let dy = w.y - g.wy;
         if (!g.moved && Math.hypot(dx, dy) * cam.current.zoom < 3) break;
         g.moved = true;
+        // Recent pointer positions, so a sticker let go mid-swipe keeps sliding.
+        g.samples = [...(g.samples ?? []).slice(-5), [performance.now(), e.clientX, e.clientY]];
         // Over a window: it'll drop in there, so no snapping.
         g.into = g.canDrop ? windowDropAt(e.clientX, e.clientY, g.originals) : null;
         markDrop(g.into);
@@ -1820,7 +1936,7 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
           const moving = new Set(g.originals.map((r) => r.id));
           const others: ReturnType<typeof bounds>[] = [];
           for (const r of rowsRef.current.values()) {
-            if (moving.has(r.id) || r.type === "stroke" || r.type === "place" || pageOf(r) !== page) continue;
+            if (moving.has(r.id) || r.type === "stroke" || isArea(r.type) || pageOf(r) !== page) continue;
             others.push(bounds(r));
           }
           const snap = snapBox({ ...box, x: box.x + dx, y: box.y + dy }, others, 8 / cam.current.zoom);
@@ -1889,7 +2005,7 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
           const touches = b.x < box.x + box.w && b.x + b.w > box.x && b.y < box.y + box.h && b.y + b.h > box.y;
           // A selection box sweeps past locked things (a background, say); click them to pick them.
           if (r.data.locked) continue;
-          if (r.type === "place" ? contains(box, b) : touches) hit.push(r.id);
+          if (isArea(r.type) ? contains(box, b) : touches) hit.push(r.id);
         }
         setSelectedIds([...new Set([...g.base, ...withGroups(hit)])]);
         break;
@@ -1927,6 +2043,21 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
           made = mkRow("stroke", strokeData(g.points), nextZ(), me.id);
         }
         setDraft(null);
+        if (made && made.type === "stroke" && !mirror) {
+          const b = bounds(made);
+          const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+          for (const r of rowsRef.current.values()) {
+            if (r.type !== "youtube") continue;
+            const rb = bounds(r);
+            if (cx < rb.x || cx > rb.x + rb.w || cy < rb.y || cy > rb.y + rb.h) continue;
+            const t = videoTime(r.id);
+            if (t !== null && t > 0.3) {
+              made = { ...made, data: { ...made.data, videoAt: { id: r.id, t: Math.round(t * 10) / 10 } } };
+              showToast(`Note pinned to ${formatVideoTime(t)} of the video. It shows up at that moment.`);
+            }
+            break;
+          }
+        }
         if (made) {
           // Mirror pen: the copies are grouped with the stroke, so they move together.
           const copies = mirror ? mirrorTransforms(mirror, mirrorCenter.x, mirrorCenter.y) : [];
@@ -1962,6 +2093,9 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
         markDrop(null);
         if (g.moved && g.into && dropIntoWindow(g.originals, g.into)) {
           endActivity();
+        } else if (g.moved && g.originals.length === 1 && g.originals[0].type === "sticker" && flickSpeed(g.samples)) {
+          const v = flickSpeed(g.samples)!;
+          flick(rowsRef.current.get(g.originals[0].id) ?? g.originals[0], g.originals[0], v[0] / cam.current.zoom, v[1] / cam.current.zoom);
         } else if (g.moved) {
           void send(
             g.originals.map((r) => ({ before: committedRef.current.get(r.id) ?? r, after: rowsRef.current.get(r.id) ?? r })),
@@ -2091,9 +2225,13 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
         e.preventDefault();
         setTool("select");
         setSelectedIds([...rowsRef.current.keys()]);
-      } else if ((mod && e.key.toLowerCase() === "f") || (e.key === "/" && !mod)) {
+      } else if (mod && e.key.toLowerCase() === "f") {
         e.preventDefault();
         setSearchOpen(true);
+      } else if (e.key === "/" && !mod && !laneOpen && !viewOnly) {
+        e.preventDefault();
+        setSayText("");
+        setSayOpen(true);
       } else if (mod && e.key.toLowerCase() === "d" && selectedIds.length && !laneOpen) {
         e.preventDefault();
         duplicateSelection();
@@ -2130,6 +2268,7 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
       if (!picked.length) return;
       e.preventDefault();
       e.clipboardData?.setData("text/plain", CLIP_PREFIX + JSON.stringify(picked.map((r) => ({ type: r.type, data: r.data }))));
+      clipRef.current = picked;
       if (cut) deleteIds(picked.map((r) => r.id));
       showToast(cut ? "Cut. Paste it anywhere, even in another room." : "Copied. Paste it anywhere, even in another room.");
     };
@@ -2254,6 +2393,9 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
       markSeen,
       unread: (thread) => unreadBy.get(thread) ?? NO_UNREAD,
       people,
+      roomEmojis,
+      onlineIds,
+      clearInside: (id) => clearInsideRef.current(id),
       highlightMsg,
       sendChat: sendTo,
       stopEditing: () => setEditingId(null),
@@ -2272,7 +2414,7 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
       openCapsule: (id) => setDialog({ kind: "capsuleOpen", id, title: rowsRef.current.get(id)?.data.title || "Time capsule" }),
       addToCapsule: (id) => setDialog({ kind: "capsuleNote", id }),
     }),
-    [boardId, me, laneOpen, camera.zoom, watchers, serverNow, patch, applyEditTo, finishText, reportTyping, threads, react, markSeen, unreadBy, people, highlightMsg, sendTo, sendYt, onYt, onListener, setEditingId, setSelectedId],
+    [boardId, me, laneOpen, camera.zoom, watchers, serverNow, patch, applyEditTo, finishText, reportTyping, threads, react, markSeen, unreadBy, people, roomEmojis, onlineIds, highlightMsg, sendTo, sendYt, onYt, onListener, setEditingId, setSelectedId],
   );
 
   /* ---------- Others' live activity ---------- */
@@ -2354,8 +2496,8 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
   const displayRows = laneOpen ? (laneRows ?? []).filter((r) => pageOf(r) === page) : liveRows;
   // Where things are on screen right now, including others' drags (for their selection outlines).
   const liveById = liveRows === rows ? rowsById : new Map(liveRows.map((r) => [r.id, r]));
-  const placesLayer = displayRows.filter((r) => r.type === "place");
-  const contentLayer = displayRows.filter((r) => r.type !== "place");
+  const placesLayer = displayRows.filter((r) => isArea(r.type));
+  const contentLayer = displayRows.filter((r) => !isArea(r.type));
   const selectedRows = laneOpen ? [] : selectedIds.map((id) => rowsById.get(id)).filter((r): r is ElementRow => !!r);
   const selected = selectedRows.length === 1 ? selectedRows[0] : null;
   const stylable = selectedRows.filter((r) => STYLABLE.includes(r.type));
@@ -2469,6 +2611,45 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
       showToast("Couldn't turn it off. Try again.");
     }
   }
+  /** A picture of some items on the board: transparent, at most `side` pixels across. */
+  async function picturePng(list: ElementRow[], side: number) {
+    const b = unionBounds(list);
+    const world = rootRef.current?.querySelector<HTMLElement>(".world");
+    if (!b || !world) return null;
+    const { toPng } = await import("html-to-image");
+    const pad = 6;
+    const w = Math.ceil(b.w + pad * 2), h = Math.ceil(b.h + pad * 2);
+    const ids = new Set(list.map((r) => r.id));
+    const skip = ["resize-handle", "rotate-handle", "cursor", "remote-tag", "lock-chip", "like-chip"];
+    return toPng(world, {
+      width: w,
+      height: h,
+      pixelRatio: Math.min(4, side / Math.max(w, h)),
+      style: { transform: `translate(${pad - b.x}px, ${pad - b.y}px)`, transformOrigin: "0 0" },
+      filter: (n) => {
+        if (!(n instanceof HTMLElement)) return true;
+        if (n.dataset.el) return ids.has(n.dataset.el);
+        return n.tagName !== "IFRAME" && !skip.some((c) => n.classList.contains(c));
+      },
+    });
+  }
+  function startEmojiFrom(list: ElementRow[]) {
+    setEmojiFrom(list.filter((r) => EMOJI_TYPES.includes(r.type)));
+  }
+  async function makeEmoji(name: string) {
+    const list = emojiFrom ?? [];
+    setSelectedIds([]);
+    await new Promise((r) => setTimeout(r, 60));
+    const png = await picturePng(list, 128).catch(() => null);
+    if (!png) throw new Error("Couldn't draw the picture");
+    const blob = await (await fetch(png)).blob();
+    const up = await api.upload(boardId, blob, `${name}.png`);
+    const res = await api.addEmoji(boardId, { name, url: up.url, from: me.id });
+    setBoard((b) => (b ? { ...b, emojis: res.emojis } : b));
+    showToast(`:${name}: is ready. Use it in any chat in this room.`);
+    setEmojiFrom(null);
+  }
+
   /** Saves the page (or the selection) as a PNG. Videos and web embeds show as blank cards. */
   async function exportPng(onlySelection: boolean) {
     const list = onlySelection && selectedRows.length ? selectedRows : rows;
@@ -2508,6 +2689,172 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
     } finally {
       setSelectedIds(keep);
     }
+  }
+
+  function sendToBack(list: ElementRow[]) {
+    let min = Infinity;
+    for (const r of rowsRef.current.values()) min = Math.min(min, r.z);
+    let z = (Number.isFinite(min) ? min : 0) - list.length;
+    const sorted = [...list].sort((a, b) => a.z - b.z);
+    void send(sorted.map((r) => ({ before: committedRef.current.get(r.id) ?? r, after: { ...r, z: z++ } })));
+  }
+  function bringToFront(list: ElementRow[]) {
+    let z = nextZ();
+    const sorted = [...list].sort((a, b) => a.z - b.z);
+    void send(sorted.map((r) => ({ before: committedRef.current.get(r.id) ?? r, after: { ...r, z: z++ } })));
+  }
+  function pasteAt(items: ElementRow[], at: { x: number; y: number }) {
+    const box = unionBounds(items);
+    if (!box) return;
+    const copies = cloneRows(items, at.x - box.x, at.y - box.y);
+    void send(copies.map((r) => ({ before: null, after: r })));
+    setTool("select");
+    setSelectedIds(copies.map((r) => r.id));
+  }
+
+  /** Right click: a menu of what you can do with what's under the pointer. */
+  function onContextMenu(e: React.MouseEvent) {
+    const target = e.target as HTMLElement;
+    // Text boxes keep the browser's own menu (spelling, paste).
+    if (isEditable(target) || target.closest("[contenteditable=true], input, textarea") || laneOpen) return;
+    e.preventDefault();
+    if (viewOnly) return;
+    gesture.current = null;
+    const w = toWorld(e.clientX, e.clientY);
+    const elId = target.closest("[data-el]")?.getAttribute("data-el");
+    const items: MenuItem[] = [];
+    if (elId && rowsRef.current.get(elId)) {
+      const ids = selectedIdsRef.current.includes(elId) ? selectedIdsRef.current : withGroups([elId]);
+      if (!selectedIdsRef.current.includes(elId)) {
+        setTool("select");
+        setSelectedIds(ids);
+      }
+      selectedIdsRef.current = ids;
+      const list = ids.map((id) => rowsRef.current.get(id)).filter((r): r is ElementRow => !!r);
+      const one = list.length === 1 ? list[0] : null;
+      const locked = list.every((r) => r.data.locked);
+      const grouped = list.length > 1 && list.every((r) => r.data.group && r.data.group === list[0].data.group);
+      if (one && EDITABLE.includes(one.type) && !one.data.locked) items.push({ label: "Edit", icon: "pen", run: () => setEditingId(one.id) });
+      if (one?.type === "image" && !one.data.locked) items.push({ label: "Crop and rotate", icon: "crop", run: () => setPhotoEditId(one.id) });
+      items.push(
+        {
+          label: "Copy",
+          icon: "copy",
+          hint: "Ctrl+C",
+          run: () => {
+            clipRef.current = list;
+            void navigator.clipboard?.writeText(CLIP_PREFIX + JSON.stringify(list.map((r) => ({ type: r.type, data: r.data })))).catch(() => {});
+            showToast("Copied");
+          },
+        },
+        { label: "Duplicate", icon: "copy", hint: "Ctrl+D", run: duplicateSelection },
+        "sep",
+        { label: "Bring to front", icon: "front", run: () => bringToFront(list) },
+        { label: "Send to back", icon: "back2", run: () => sendToBack(list) },
+        "sep",
+      );
+      if (list.length > 1) items.push({ label: grouped ? "Ungroup" : "Group", icon: grouped ? "ungroup" : "group", hint: "Ctrl+G", run: toggleGroup });
+      items.push({ label: locked ? "Unlock" : "Lock", icon: locked ? "lock" : "unlock", hint: "Ctrl+Shift+L", run: toggleLock });
+      if (list.some((r) => EMOJI_TYPES.includes(r.type))) items.push({ label: "Make an emoji", icon: "smile", run: () => startEmojiFrom(list) });
+      items.push({ label: "Save as a picture", icon: "download", run: () => void exportPng(true) }, "sep", {
+        label: list.length > 1 ? `Delete ${list.length} things` : "Delete",
+        icon: "trash",
+        danger: true,
+        hint: "Del",
+        run: () => deleteIds(ids),
+      });
+    } else {
+      setSelectedIds([]);
+      if (clipRef.current.length) items.push({ label: "Paste here", icon: "copy", hint: "Ctrl+V", run: () => pasteAt(clipRef.current, w) });
+      items.push(
+        { label: "Sticky note here", icon: "stickynote", run: () => addRow("sticky", { x: w.x - 100, y: w.y - 100, w: 200, h: 200, text: "", color: stickyColor }) },
+        { label: "Window here", icon: "window", run: () => addRow("window", { x: w.x - 320, y: w.y - 40, w: 640, title: "Window", blocks: [] }) },
+        { label: "Text here", icon: "text", run: () => { setTool("text"); } },
+        "sep",
+        { label: "Select everything", hint: "Ctrl+A", icon: "select", run: () => { setTool("select"); setSelectedIds([...rowsRef.current.keys()]); } },
+        { label: "Show everything", hint: "Shift+1", icon: "fit", run: fitAll },
+      );
+    }
+    setMenuAt({ x: e.clientX, y: e.clientY, items });
+  }
+
+  /** During a Pictionary round, only the person whose turn it is draws inside that game's area. */
+  function blockedByGame(x: number, y: number) {
+    for (const r of rowsRef.current.values()) {
+      const g = r.type === "game" ? r.data.game : null;
+      if (!g || (g.status !== "drawing" && g.status !== "choosing") || g.drawer === me.id) continue;
+      const b = bounds(r);
+      if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
+        const who = g.players.find((p) => p.id === g.drawer)?.name ?? "someone else";
+        showToast(`It's ${who}'s turn to draw here. Guess in the box on the side!`);
+        return true;
+      }
+    }
+    return false;
+  }
+  /** Clears what's drawn inside an area (not the area itself, locked things or windows). */
+  function clearInside(areaId: string) {
+    const area = rowsRef.current.get(areaId);
+    if (!area) return;
+    const b = bounds(area);
+    const ids = [...rowsRef.current.values()]
+      .filter((r) => r.id !== areaId && !isArea(r.type) && r.type !== "window" && !r.data.locked && contains(b, bounds(r)))
+      .map((r) => r.id);
+    if (ids.length) deleteIds(ids);
+  }
+
+  /** How fast the pointer was moving when let go (px per ms), if it was a flick. */
+  function flickSpeed(samples?: number[][]) {
+    if (!samples || samples.length < 2) return null;
+    const a = samples[0], b = samples[samples.length - 1];
+    const dt = b[0] - a[0];
+    if (dt <= 0 || performance.now() - b[0] > 80) return null;
+    const vx = (b[1] - a[1]) / dt, vy = (b[2] - a[2]) / dt;
+    return Math.hypot(vx, vy) > 0.6 ? ([vx, vy] as const) : null;
+  }
+  /** A flicked sticker slides, slows down and bounces off other things and the edges of the view. */
+  function flick(current: ElementRow, original: ElementRow, vx: number, vy: number) {
+    let row = current;
+    const others = [...rowsRef.current.values()].filter((r) => r.id !== row.id && !isArea(r.type) && r.type !== "stroke").map((r) => bounds(r));
+    let last = performance.now();
+    const step = (t: number) => {
+      const dt = Math.min(40, t - last);
+      last = t;
+      const b = bounds(row);
+      let x = row.data.x + vx * dt;
+      let y = row.data.y + vy * dt;
+      for (const o of others) {
+        if (x >= o.x + o.w || x + b.w <= o.x || y >= o.y + o.h || y + b.h <= o.y) continue;
+        const px = Math.min(x + b.w - o.x, o.x + o.w - x);
+        const py = Math.min(y + b.h - o.y, o.y + o.h - y);
+        if (px < py) {
+          x += x + b.w / 2 < o.x + o.w / 2 ? -px : px;
+          vx = -vx * 0.75;
+        } else {
+          y += y + b.h / 2 < o.y + o.h / 2 ? -py : py;
+          vy = -vy * 0.75;
+        }
+      }
+      const c = cam.current;
+      const left = -c.x / c.zoom, top = -c.y / c.zoom;
+      const right = left + window.innerWidth / c.zoom, bottom = top + window.innerHeight / c.zoom;
+      if (x < left) [x, vx] = [left, Math.abs(vx) * 0.75];
+      if (x + b.w > right) [x, vx] = [right - b.w, -Math.abs(vx) * 0.75];
+      if (y < top) [y, vy] = [top, Math.abs(vy) * 0.75];
+      if (y + b.h > bottom) [y, vy] = [bottom - b.h, -Math.abs(vy) * 0.75];
+      const friction = Math.pow(0.9965, dt);
+      vx *= friction;
+      vy *= friction;
+      row = { ...row, data: { ...row.data, x, y } };
+      preview([{ id: row.id, row }]);
+      setActivity({ k: "move", items: [[row.id, Math.round(x), Math.round(y)]] });
+      if (Math.hypot(vx, vy) > 0.02) nextFrame(step);
+      else {
+        void send([{ before: committedRef.current.get(row.id) ?? original, after: { ...row, data: { ...row.data, x: Math.round(x), y: Math.round(y) } } }]);
+        endActivity();
+      }
+    };
+    nextFrame(step);
   }
 
   /** The partial eraser's reach on the board (a fixed size on screen). */
@@ -2769,6 +3116,7 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
           schedulePresence();
         }}
         onDoubleClick={onDoubleClick}
+        onContextMenu={onContextMenu}
         onDragOver={(e) => {
           if (laneOpen || !e.dataTransfer.types.includes("Files")) return;
           e.preventDefault();
@@ -2914,6 +3262,7 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
                   zoom={camera.zoom}
                   color={p.color}
                   label={`${p.name}${p.activity ? ACTIVITY_VERB[p.activity.k] : ""}`}
+                  say={p.say}
                 />
               ),
             )}
@@ -3058,6 +3407,9 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
           >
             <Icon name="front" size={18} />
           </button>
+          <button type="button" className="icon-btn sm" aria-label="Send to back" title="Send to back" onClick={() => sendToBack(selectedRows)}>
+            <Icon name="back2" size={18} />
+          </button>
           <button type="button" className="icon-btn sm" aria-label={selectedRows.length > 1 ? `Delete ${selectedRows.length} items` : "Delete"} onClick={() => deleteIds(selectedIds)}>
             <Icon name="trash" size={18} />
           </button>
@@ -3185,6 +3537,16 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
                   </strong>
                   <span>{online.length ? `${online.length + 1} in this room` : `Share code ${displayCode(boardId)} to invite`}</span>
                 </div>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label="Bring everyone to what you're looking at"
+                  title={partnerOnline ? "Come here: bring everyone to what you're looking at" : "Nobody else is here right now"}
+                  disabled={!partnerOnline || viewOnly}
+                  onClick={summonEveryone}
+                >
+                  <Icon name="pin" />
+                </button>
                 <button type="button" className="icon-btn heart-btn" aria-label="Wave at everyone in the room" title="Wave" onClick={sendWave}>
                   <Icon name="wave" />
                 </button>
@@ -3200,6 +3562,13 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
                   <Icon name="eye" />
                 </button>
               </div>
+              <FocusTimer
+                focus={board?.focus ?? null}
+                serverNow={serverNow}
+                readOnly={viewOnly}
+                onChange={setFocus}
+                onLofi={addLofi}
+              />
               <button
                 type="button"
                 className="icon-btn surface theme-btn"
@@ -3265,6 +3634,9 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
               )}
               <button type="button" className="btn" onClick={() => void exportPng(false)}>
                 <Icon name="download" size={18} /> Save this page as a picture
+              </button>
+              <button type="button" className="btn" onClick={() => void saveTimelapse()}>
+                <Icon name="play" size={18} /> Save a time-lapse video
               </button>
               {!viewOnly && (
                 <div className="menu-templates">
@@ -3421,11 +3793,52 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
                 {me.name} · change
               </button>
               <p className="muted" style={{ margin: 0, fontSize: 12 }}>
-                Shortcuts: V select · H pan · P draw · E erase · T text · N list · W window · Space+drag pan · Ctrl+Z undo · Ctrl+F search · Ctrl+D duplicate · Ctrl+G group · Ctrl+Shift+L lock · Ctrl+C/V copy and paste · arrows nudge
+                Shortcuts: V select · H pan · P draw · E erase · T text · N list · W window · Space+drag pan · Ctrl+Z undo · / say something · Ctrl+F search · Ctrl+D duplicate · Ctrl+G group · Ctrl+Shift+L lock · Ctrl+C/V copy and paste · arrows nudge
               </p>
             </div>
           )}
 
+          {emojiFrom && <EmojiMaker taken={roomEmojis.map((e) => e.name)} onMake={makeEmoji} onClose={() => setEmojiFrom(null)} />}
+          {sayOpen && (
+            <div
+              className="say-box"
+              style={{
+                left: (lastCursor.current?.x ?? 0) * camera.zoom + camera.x + 18,
+                top: (lastCursor.current?.y ?? 0) * camera.zoom + camera.y + 22,
+                ["--sel" as string]: me.color,
+              }}
+            >
+              <input
+                autoFocus
+                aria-label="Say something next to your cursor"
+                placeholder="Say something"
+                value={sayText}
+                maxLength={140}
+                onChange={(e) => {
+                  setSayText(e.target.value);
+                  updateSay(e.target.value);
+                }}
+                onBlur={() => {
+                  setSayOpen(false);
+                  updateSay(sayText, 4000);
+                }}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === "Enter") {
+                    setSayOpen(false);
+                    updateSay(sayText, 4000);
+                  }
+                  if (e.key === "Escape") {
+                    setSayText("");
+                    updateSay(null);
+                    setSayOpen(false);
+                  }
+                }}
+              />
+            </div>
+          )}
+          {summon && <SummonBanner name={summon.name} onGo={() => goToSummon(summon)} onSkip={() => setSummon(null)} />}
+          {menuAt && <ContextMenu x={menuAt.x} y={menuAt.y} items={menuAt.items} onClose={() => setMenuAt(null)} />}
           {photoEditId && rowsById.get(photoEditId) && (
             <PhotoEditor
               row={rowsById.get(photoEditId)!}
