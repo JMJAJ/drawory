@@ -151,6 +151,15 @@ const msg = await call(`/api/boards/${BOARD}/messages`, json({ user_id: "smoke-u
 check("Chat message saved", msg.status === 201);
 check("Chat message streams", await waitFor(() => (chSub.getSnapshot().data ?? []).some((m) => m.body === "hello room" && m.name === "Smoke")));
 
+// 10b. Deleting a chat box deletes its messages
+const boxId = crypto.randomUUID();
+await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [{ op: "upsert", id: boxId, type: "chatbox", z: 3, data: { x: 0, y: 0, w: 320, h: 400, title: "Chat" } }] }));
+await call(`/api/boards/${BOARD}/messages`, json({ user_id: "smoke-user", name: "Smoke", color: "#2F6BD0", body: "in a box", thread: boxId }));
+check("Chat box message streams with its thread", await waitFor(() => (chSub.getSnapshot().data ?? []).some((m) => m.thread === boxId && m.body === "in a box")));
+await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [{ op: "delete", id: boxId }] }));
+check("Deleting a chat box deletes its messages", await waitFor(() => !(chSub.getSnapshot().data ?? []).some((m) => m.thread === boxId)));
+check("Room chat messages are untouched", (chSub.getSnapshot().data ?? []).some((m) => m.body === "hello room"));
+
 // 11. Pages
 const pagesRes = await call(`/api/boards/${BOARD}`, json({ pages: [{ id: "main", name: "Doodles" }, { id: "p-plans", name: "Plans" }], from: "smoke" }, "PATCH"));
 const pagesBody = await pagesRes.json();

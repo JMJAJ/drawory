@@ -5,6 +5,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "rea
 import { Icon } from "@/components/icons";
 import { bounds, colorValue, fontValue, RESIZABLE } from "@/lib/client/elements";
 import { textOn } from "@/lib/client/identity";
+import { proximityFactor, volumeKeeper, type Listener } from "@/lib/client/proximity";
 import { stickerSrc } from "@/lib/stickers";
 import type { ElementRow } from "@/lib/types";
 import { ChatThread } from "./ChatThread";
@@ -344,10 +345,81 @@ function ImageView({ row, editing }: { row: ElementRow; editing: boolean }) {
 
 function VideoView({ row }: { row: ElementRow }) {
   const d = row.data;
+  const { setWatching } = useBoard();
+  const video = useRef<HTMLVideoElement>(null);
+  const keeper = useRef<((f: number) => void) | null>(null);
+  const level = useProximity(row, (f) => {
+    const v = video.current;
+    if (!v) return;
+    keeper.current ??= volumeKeeper(() => v.volume, (x) => (v.volume = x));
+    keeper.current(f);
+  });
   return (
     <div className="card media-card">
-      <video src={d.src} controls playsInline preload="metadata" data-interactive style={{ height: (d.h ?? 300) - 16 }} />
+      <video
+        ref={video}
+        src={d.src}
+        controls
+        playsInline
+        preload="metadata"
+        data-interactive
+        style={{ height: (d.h ?? 300) - 16 }}
+        onPlay={() => setWatching(row.id)}
+        onPause={() => setWatching(null)}
+        onEnded={() => setWatching(null)}
+      />
+      <div className="media-volume">
+        <VolumeChip level={level} />
+      </div>
     </div>
+  );
+}
+
+/**
+ * Keeps a sound's volume matched to how far my view is from it (proximity audio).
+ * Calls `apply` with 0..1 as I move around or the element moves; returns the level in 10% steps.
+ */
+function useProximity(row: ElementRow, apply: (factor: number) => void) {
+  const { onListener } = useBoard();
+  const b = bounds(row);
+  const box = useRef(b);
+  const applyRef = useRef(apply);
+  const last = useRef<{ at: Listener; enabled: boolean } | null>(null);
+  const [level, setLevel] = useState(100);
+  const update = useRef(() => {});
+  useEffect(() => {
+    applyRef.current = apply;
+    update.current = () => {
+      const l = last.current;
+      if (!l) return;
+      const f = l.enabled ? proximityFactor(box.current, l.at) : 1;
+      applyRef.current(f);
+      setLevel(Math.round(f * 10) * 10);
+    };
+  });
+  useEffect(
+    () =>
+      onListener((at, enabled) => {
+        last.current = { at, enabled };
+        update.current();
+      }),
+    [onListener],
+  );
+  // The element moved or was resized: recompute from where I already am.
+  useEffect(() => {
+    box.current = { x: b.x, y: b.y, w: b.w, h: b.h };
+    update.current();
+  }, [b.x, b.y, b.w, b.h]);
+  return level;
+}
+
+function VolumeChip({ level }: { level: number }) {
+  if (level >= 100) return null;
+  return (
+    <span className="volume-chip" title="Proximity audio: move closer to hear it louder">
+      <Icon name={level === 0 ? "mute" : "volume"} size={13} />
+      {level}%
+    </span>
   );
 }
 
@@ -358,7 +430,15 @@ function formatTime(s: number) {
 
 function VoiceView({ row }: { row: ElementRow }) {
   const d = row.data;
+  const { setWatching } = useBoard();
   const audio = useRef<HTMLAudioElement>(null);
+  const keeper = useRef<((f: number) => void) | null>(null);
+  const level = useProximity(row, (f) => {
+    const a = audio.current;
+    if (!a) return;
+    keeper.current ??= volumeKeeper(() => a.volume, (x) => (a.volume = x));
+    keeper.current(f);
+  });
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const peaks = d.peaks?.length ? d.peaks : Array.from({ length: 32 }, () => 0.4);
@@ -390,16 +470,24 @@ function VoiceView({ row }: { row: ElementRow }) {
       </div>
       <div className="voice-meta">
         <strong>{formatTime(d.duration ?? 0)}</strong>
+        <VolumeChip level={level} />
         {d.fromName ? `from ${d.fromName}` : "voice note"}
       </div>
       <audio
         ref={audio}
         src={d.src}
         preload="none"
-        onPlay={() => setPlaying(true)}
-        onPause={() => setPlaying(false)}
+        onPlay={() => {
+          setPlaying(true);
+          setWatching(row.id);
+        }}
+        onPause={() => {
+          setPlaying(false);
+          setWatching(null);
+        }}
         onEnded={() => {
           setPlaying(false);
+          setWatching(null);
           setProgress(0);
         }}
         onTimeUpdate={(e) => {
@@ -424,6 +512,15 @@ function YouTubeView({ row }: { row: ElementRow }) {
   const shared = useRef<{ time: number; at: number; playing: boolean } | null>(null);
   const [playing, setPlaying] = useState(false);
   const { sendYt, onYt, setWatching, serverNow, patch } = ctx;
+  const keeper = useRef<((f: number) => void) | null>(null);
+  const factor = useRef(1);
+  const level = useProximity(row, (f) => {
+    factor.current = f;
+    const p = player.current;
+    if (!p) return;
+    keeper.current ??= volumeKeeper(() => p.getVolume() / 100, (v) => p.setVolume(Math.round(v * 100)));
+    keeper.current(f);
+  });
 
   // Older cards were saved without a title: look it up once and save it for everyone.
   useEffect(() => {
@@ -453,6 +550,13 @@ function YouTubeView({ row }: { row: ElementRow }) {
         height: "100%",
         playerVars: { playsinline: 1, rel: 0, modestbranding: 1 },
         events: {
+          // Start at the right volume for how far away it is.
+          onReady: () => {
+            const p = player.current;
+            if (!p) return;
+            keeper.current = volumeKeeper(() => p.getVolume() / 100, (v) => p.setVolume(Math.round(v * 100)));
+            keeper.current(factor.current);
+          },
           onStateChange: (e) => {
             const p = player.current;
             if (!p) return;
@@ -542,7 +646,9 @@ function YouTubeView({ row }: { row: ElementRow }) {
       <div className="yt-meta">
         <div>
           <div className="yt-title">{d.title || "YouTube video"}</div>
-          <div className="yt-sub">{together ? `In sync with ${names}` : "Play, pause and seek stay in sync"}</div>
+          <div className="yt-sub">
+            {together ? `In sync with ${names}` : "Play, pause and seek stay in sync"} <VolumeChip level={level} />
+          </div>
         </div>
         <Icon name="youtube" size={22} style={{ color: "var(--muted)", flex: "none" }} />
       </div>
@@ -694,6 +800,73 @@ function ChatBoxView({ row, editing }: { row: ElementRow; editing: boolean }) {
   );
 }
 
+/** Paper colors for sticky notes; they stay light in both themes, with dark ink. */
+export const STICKY_COLORS = [
+  { id: "yellow", label: "Yellow", value: "#FFE58F" },
+  { id: "pink", label: "Pink", value: "#FFC6D9" },
+  { id: "blue", label: "Blue", value: "#C2E2FF" },
+  { id: "green", label: "Green", value: "#C9F0C4" },
+  { id: "purple", label: "Purple", value: "#E2D2FF" },
+  { id: "orange", label: "Orange", value: "#FFD3AC" },
+];
+
+function StickyView({ row, editing }: { row: ElementRow; editing: boolean }) {
+  const ctx = useBoard();
+  const d = row.data;
+  const paper = STICKY_COLORS.find((c) => c.id === d.color) ?? STICKY_COLORS[0];
+  const text = d.text ?? "";
+  // Bigger notes get bigger writing; long notes shrink a little to fit.
+  const w = d.w ?? 200;
+  const size = Math.round(Math.max(12, Math.min(48, (w / 9) * (text.length > 160 ? 0.62 : text.length > 70 ? 0.8 : 1))));
+  return (
+    <div className="sticky" style={{ background: paper.value }}>
+      {editing ? (
+        <textarea
+          className="sticky-text"
+          aria-label="Sticky note"
+          defaultValue={text}
+          autoFocus
+          data-interactive
+          maxLength={1000}
+          placeholder="Write something…"
+          style={{ fontSize: size }}
+          onBlur={(e) => {
+            if (e.target.value !== text) ctx.patch(row.id, { text: e.target.value });
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") e.currentTarget.blur();
+            e.stopPropagation();
+          }}
+        />
+      ) : (
+        <div className="sticky-text" style={{ fontSize: size }}>
+          {text || <span className="sticky-empty">Double-click to write</span>}
+        </div>
+      )}
+      {editing && (
+        <div className="sticky-colors" role="radiogroup" aria-label="Note color">
+          {STICKY_COLORS.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              role="radio"
+              aria-checked={paper.id === c.id}
+              aria-label={c.label}
+              title={c.label}
+              className="sticky-color"
+              data-interactive
+              style={{ background: c.value }}
+              // Keep the text box focused so its words aren't lost when picking a color.
+              onPointerDown={(e) => e.preventDefault()}
+              onClick={() => ctx.patch(row.id, { color: c.id })}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PlaceView({ row }: { row: ElementRow }) {
   return (
     <>
@@ -771,6 +944,9 @@ export const ElementView = memo(function ElementView({ row, selected, solo, edit
       break;
     case "chatbox":
       content = <ChatBoxView row={row} editing={editing} />;
+      break;
+    case "sticky":
+      content = <StickyView row={row} editing={editing} />;
       break;
     case "sticker":
       // eslint-disable-next-line @next/next/no-img-element

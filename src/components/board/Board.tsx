@@ -25,6 +25,7 @@ import { initials, textOn, type Me } from "@/lib/client/identity";
 import { audioPeaks, detectLink, fitWithin, imageSize, shrinkPhoto, videoSize, type DetectedLink } from "@/lib/client/media";
 import type { Activity, BoardMeta, BoardPage, ChatRow, ElementData, ElementRow, ElementType, PresenceRow } from "@/lib/types";
 import { PagesBar } from "./PagesBar";
+import { NowPlaying, type PlayingItem } from "./NowPlaying";
 import { BoardContext, type BoardCtx, type YtCommand } from "./context";
 import {
   AddMediaDialog,
@@ -47,7 +48,7 @@ import type { Sticker } from "@/lib/stickers";
 
 type Tool =
   | "hand" | "select" | "pen" | "eraser" | "rect" | "ellipse" | "arrow" | "text"
-  | "note" | "sticker" | "chatbox" | "media" | "youtube" | "voice" | "capsule";
+  | "note" | "sticky" | "sticker" | "chatbox" | "media" | "youtube" | "voice" | "capsule";
 
 type Change = { before: ElementRow | null; after: ElementRow | null };
 
@@ -76,6 +77,7 @@ const TOOL_GROUPS: { id: Tool; label: string; icon: IconName; key?: string }[][]
     { id: "text", label: "Text", icon: "text", key: "t" },
   ],
   [
+    { id: "sticky", label: "Sticky note", icon: "stickynote", key: "y" },
     { id: "note", label: "Checklist", icon: "note", key: "n" },
     { id: "sticker", label: "Stickers", icon: "sticker", key: "s" },
     { id: "chatbox", label: "Chat box", icon: "chat", key: "c" },
@@ -103,7 +105,7 @@ const DEFAULT_PAGES: BoardPage[] = [{ id: "main", name: "Page 1" }];
 const pageOf = (r: { data: ElementData }) => r.data.page ?? "main";
 const NO_CHAT: readonly ChatRow[] = [];
 /** Types you can open for editing (double-click, double-tap or the pen button). */
-const EDITABLE: ElementType[] = ["text", "note", "image", "chatbox"];
+const EDITABLE: ElementType[] = ["text", "note", "image", "chatbox", "sticky"];
 
 function isEditable(t: EventTarget | null) {
   const el = t as HTMLElement | null;
@@ -211,6 +213,8 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   const [sizeId, setSizeId] = useState(2);
   const [fontId, setFontId] = useState<string>("clean");
   const [textSize, setTextSize] = useState(28);
+  // New sticky notes use the color of the last one you picked.
+  const [stickyColor, setStickyColor] = useState("yellow");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   // Single-item helpers; the toolbar, editing and resizing work on one item.
@@ -342,6 +346,33 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     }, 400);
     return () => clearTimeout(t);
   }, [camera, camKey]);
+
+  /* ---------- Proximity audio ---------- */
+  const [proximityOn, setProximityOn] = useState(() => {
+    try {
+      return localStorage.getItem("drawory:proximity") !== "off";
+    } catch {
+      return true;
+    }
+  });
+  const proximityRef = useRef(proximityOn);
+  const listenerSubs = useRef(new Set<(at: { x: number; y: number }, enabled: boolean) => void>());
+  const listenerNow = () => {
+    const c = cam.current;
+    return { x: (window.innerWidth / 2 - c.x) / c.zoom, y: (window.innerHeight / 2 - c.y) / c.zoom };
+  };
+  useEffect(() => {
+    proximityRef.current = proximityOn;
+    const at = listenerNow();
+    for (const cb of listenerSubs.current) cb(at, proximityOn);
+  }, [camera, proximityOn]);
+  const onListener = useCallback((cb: (at: { x: number; y: number }, enabled: boolean) => void) => {
+    listenerSubs.current.add(cb);
+    cb(listenerNow(), proximityRef.current);
+    return () => {
+      listenerSubs.current.delete(cb);
+    };
+  }, []);
 
   const toWorld = useCallback((sx: number, sy: number) => {
     const c = cam.current;
@@ -520,6 +551,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     (id: string, data: Partial<ElementData>, commit = true) => {
       const row = rowsRef.current.get(id);
       if (!row) return;
+      if (row.type === "sticky" && data.color) setStickyColor(data.color);
       const after = { ...row, data: { ...row.data, ...data }, updated_at: new Date() };
       if (commit) void send([{ before: committedRef.current.get(id) ?? null, after }]);
       else preview([{ id, row: after }]);
@@ -867,6 +899,41 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     void sendSignal("wave").catch(() => showToast("Couldn't send the wave"));
   }
 
+  /* ---------- Now playing ---------- */
+  // Everything playing in the room (by me or anyone online), newest-joined first, any page.
+  const nowPlaying = useMemo<PlayingItem[]>(() => {
+    const byId = new Map<string, PlayingItem>();
+    const add = (id: string | null, person: { name: string; color: string; me: boolean }) => {
+      if (!id) return;
+      const row = committed.get(id) ?? rowsById.get(id);
+      if (!row || (row.type !== "youtube" && row.type !== "video" && row.type !== "audio")) return;
+      let item = byId.get(id);
+      if (!item) {
+        const title =
+          row.type === "youtube" ? row.data.title || "YouTube video" : row.type === "audio" ? `Voice note${row.data.fromName ? ` from ${row.data.fromName}` : ""}` : "Video";
+        const pg = pageOf(row);
+        item = { id, title, kind: row.type, people: [], elsewhere: pg !== page ? pages.find((p) => p.id === pg)?.name ?? "another page" : null };
+        byId.set(id, item);
+      }
+      item.people.push(person);
+    };
+    add(watching, { name: me.name, color: me.color, me: true });
+    for (const p of online) add(p.watching, { name: p.name, color: p.color, me: false });
+    return [...byId.values()];
+  }, [watching, online, committed, rowsById, me.name, me.color, page, pages]);
+
+  function jumpToElement(id: string) {
+    const row = committed.get(id) ?? rowsById.get(id);
+    if (!row) return;
+    setFollowId(null);
+    const go = () => flyTo(cameraFor(bounds(row), window.innerWidth, window.innerHeight, 160));
+    if (pageOf(row) !== page) {
+      switchPage(pageOf(row));
+      setTimeout(go, 80); // after the new page's own view is restored
+    } else go();
+    setSelectedId(row.id);
+  }
+
   /* ---------- Pages ---------- */
   function switchPage(id: string) {
     if (id === page) return;
@@ -1104,6 +1171,9 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       if (editingRow?.type === "text") {
         const box = rootRef.current?.querySelector<HTMLElement>(`[data-el="${editingId}"] .text-body`);
         finishText(editingId, box?.innerText ?? "");
+      } else if (editingRow?.type === "sticky") {
+        const area = rootRef.current?.querySelector<HTMLTextAreaElement>(`[data-el="${editingId}"] textarea.sticky-text`);
+        if (area && area.value !== (editingRow.data.text ?? "")) patch(editingId, { text: area.value });
       }
       (document.activeElement as HTMLElement | null)?.blur?.();
       setEditingId(null);
@@ -1233,6 +1303,13 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         preview([{ id: row.id, row }]);
         setEditingId(row.id);
         setActivity({ k: "typing", id: row.id, text: "", d: row.data });
+        return;
+      }
+      case "sticky": {
+        primeKeyboard(e.pointerType);
+        const row = addRow("sticky", { x: w.x - 100, y: w.y - 100, w: 200, h: 200, text: "", color: stickyColor });
+        setEditingId(row.id);
+        setTool("select");
         return;
       }
       case "note": {
@@ -1592,10 +1669,11 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       sendYt,
       onYt,
       setWatching: setWatchingState,
+      onListener,
       openCapsule: (id) => setDialog({ kind: "capsuleOpen", id, title: rowsRef.current.get(id)?.data.title || "Time capsule" }),
       addToCapsule: (id) => setDialog({ kind: "capsuleNote", id }),
     }),
-    [boardId, me, laneOpen, camera.zoom, watchers, serverNow, patch, finishText, reportTyping, threads, sendTo, sendYt, onYt, setEditingId],
+    [boardId, me, laneOpen, camera.zoom, watchers, serverNow, patch, finishText, reportTyping, threads, sendTo, sendYt, onYt, onListener, setEditingId],
   );
 
   /* ---------- Others' live activity ---------- */
@@ -2111,6 +2189,22 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
               <Link className="btn" href="/" style={{ justifyContent: "flex-start" }}>
                 <Icon name="back" size={18} /> All rooms
               </Link>
+              <label className="toggle-row">
+                <input
+                  type="checkbox"
+                  checked={proximityOn}
+                  onChange={(e) => {
+                    setProximityOn(e.target.checked);
+                    try {
+                      localStorage.setItem("drawory:proximity", e.target.checked ? "on" : "off");
+                    } catch {}
+                  }}
+                />
+                <span>
+                  <strong>Proximity audio</strong>
+                  <span className="muted">Videos and voice notes get quieter the further you are from them.</span>
+                </span>
+              </label>
               <h3>You</h3>
               <button type="button" className="btn" style={{ justifyContent: "flex-start" }} onClick={() => setDialog({ kind: "me" })}>
                 <span className="avatar" style={{ background: me.color, width: 26, height: 26 }}>
@@ -2226,6 +2320,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
             </div>
 
             <div className="bottom-right">
+              <NowPlaying items={nowPlaying} onJump={jumpToElement} />
               <button
                 type="button"
                 className="status-pill"

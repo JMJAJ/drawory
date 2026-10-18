@@ -6,7 +6,7 @@ type Ctx = { params: Promise<{ boardId: string }> };
 
 const TYPES: ElementType[] = [
   "stroke", "rect", "ellipse", "arrow", "text", "note", "image", "video",
-  "audio", "youtube", "embed", "link", "capsule", "place", "sticker", "chatbox",
+  "audio", "youtube", "embed", "link", "capsule", "place", "sticker", "chatbox", "sticky",
 ];
 const MAX_DATA = 400_000;
 const MAX_OPS = 200;
@@ -50,7 +50,11 @@ export const POST = handler<Ctx>(async (req, { params }) => {
      ),
      del as (
        delete from elements where board_id = $1 and id in (select id from input where op = 'delete')
-       returning id
+       returning id, type
+     ),
+     -- A deleted chat box takes its conversation with it.
+     chat_gone as (
+       delete from messages where board_id = $1 and thread in (select id from del where type = 'chatbox')
      ),
      ev as (
        insert into element_events (board_id, element_id, op, type, data, z, author)

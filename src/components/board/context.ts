@@ -2,6 +2,7 @@
 
 import { createContext, useContext } from "react";
 import type { Me } from "@/lib/client/identity";
+import type { Listener } from "@/lib/client/proximity";
 import type { ChatRow, ElementData } from "@/lib/types";
 
 /** play/pause: someone pressed it. tick: the person in charge says where playback is (every few seconds). */
@@ -29,6 +30,8 @@ export interface BoardCtx {
   sendYt(elementId: string, cmd: Omit<YtCommand, "sentAt">): void;
   onYt(elementId: string, handler: (cmd: YtCommand) => void): () => void;
   setWatching(elementId: string | null): void;
+  /** Where I am on the board (for proximity audio). Calls back now and whenever it changes. */
+  onListener(cb: (at: Listener, enabled: boolean) => void): () => void;
   openCapsule(elementId: string): void;
   addToCapsule(elementId: string): void;
 }

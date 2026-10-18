@@ -45,6 +45,7 @@ export const RESIZABLE: Partial<Record<ElementType, "free" | "aspect" | "width" 
   capsule: "width",
   audio: "width",
   chatbox: "free",
+  sticky: "free",
 };
 
 /** Types the style bar can recolor. */
@@ -58,6 +59,7 @@ export function bounds(el: Pick<ElementRow, "type" | "data">) {
     audio: [d.w ?? 320, 64],
     capsule: [d.w ?? 300, 190],
     link: [d.w ?? 280, d.image ? 240 : 130],
+    sticky: [d.w ?? 200, d.h ?? 200],
     // 16:9 video plus 10 px padding each side and the title row.
     youtube: [d.w ?? 480, ((d.w ?? 480) - 20) * (9 / 16) + 82],
   };

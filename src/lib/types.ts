@@ -16,7 +16,8 @@ export type ElementType =
   | "capsule"
   | "place"
   | "sticker"
-  | "chatbox";
+  | "chatbox"
+  | "sticky";
 
 export interface ElementData {
   x: number;
