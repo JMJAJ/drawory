@@ -40,9 +40,11 @@ function SongRow({ it, onAddSong, who }: { it: PlayingItem; onAddSong?: (url: st
         <span className="muted">
           {s.artists} · {who}
         </span>
-        <span className="song-bar">
-          <span style={{ width: `${pct}%` }} />
-        </span>
+        {s.duration > 0 && (
+          <span className="song-bar">
+            <span style={{ width: `${pct}%` }} />
+          </span>
+        )}
       </span>
       <span className="song-actions">
         {s.url && (

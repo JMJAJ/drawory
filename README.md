@@ -29,7 +29,7 @@ Anyone with a room's code can join it. To lock the whole site behind one passcod
 | `AUTH_SECRET` | Random string that signs the login cookie. |
 | `CLOUDINARY_URL` | Optional. Photos, videos and voice notes upload straight to this Cloudinary cloud (served optimized from its CDN, no host upload limit). Unset: they're stored in Postgres. |
 | `NEXT_PUBLIC_RELAY_URL` | Optional. The live relay on Cloudflare (`wss://…workers.dev`). Unset: the app's own server's `/ws`. |
-| `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET` | Optional. Lets people share what they're playing on Spotify (free accounts work). Make an app at developer.spotify.com/dashboard (Web API) and add `https://<your site>/api/spotify/callback` as a redirect URI (locally `http://127.0.0.1:3000/api/spotify/callback`; Spotify doesn't accept `localhost`). In Development mode, add each person's Spotify email under User Management (up to 25). |
+| `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET` | Optional, and only for Spotify Premium (Spotify only gives Web API apps to Premium accounts). Anyone, free accounts included, can instead paste their public [Data Card for Spotify](https://data-card-for-spotify.herokuapp.com) link in the menu, which needs no setup. These keys let people share what they're playing on Spotify (free accounts work). Make an app at developer.spotify.com/dashboard (Web API) and add `https://<your site>/api/spotify/callback` as a redirect URI (locally `http://127.0.0.1:3000/api/spotify/callback`; Spotify doesn't accept `localhost`). In Development mode, add each person's Spotify email under User Management (up to 25). |
 | `APP_ORIGINS` | Only read by `neon deploy`: your site's address(es), comma separated. See Deploying. |
 
 ## How sync works

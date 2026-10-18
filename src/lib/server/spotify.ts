@@ -130,3 +130,75 @@ export async function unlink(key: string) {
   await ensureSpotifyTable();
   await pool.query("delete from spotify_links where key = $1", [key]);
 }
+
+/* ---------- Data Card for Spotify (works with free accounts) ---------- */
+// People who authorized https://data-card-for-spotify.herokuapp.com get a public card of what
+// they're playing. We read that card instead of needing our own Spotify app (which needs Premium).
+
+const CARD = "https://data-card-for-spotify.herokuapp.com/api/card?user_id=";
+export const CARD_ID = /^[a-z0-9]{10,40}$/;
+
+const decode = (s: string) =>
+  s
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .trim();
+
+declare global {
+  var __draworyCardCache: Map<string, { at: number; value: Promise<NowListening | null> }> | undefined;
+  var __draworyCoverCache: Map<string, string | null> | undefined;
+}
+
+/** A track's cover from Spotify's public oEmbed (the card only has tiny inline pictures). */
+async function coverFor(url: string) {
+  const covers = (globalThis.__draworyCoverCache ??= new Map());
+  if (covers.has(url)) return covers.get(url)!;
+  const res = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(6_000) }).catch(() => null);
+  const thumb = res?.ok ? ((await res.json().catch(() => ({}))) as { thumbnail_url?: string }).thumbnail_url ?? null : null;
+  if (covers.size > 500) covers.clear();
+  covers.set(url, thumb);
+  return thumb;
+}
+
+async function readCard(userId: string): Promise<NowListening | null> {
+  const res = await fetch(CARD + userId, { signal: AbortSignal.timeout(10_000) }).catch(() => null);
+  if (!res) throw new HttpError(502, "Couldn't reach the Data Card site");
+  if (res.status === 404 || res.status === 400) throw new HttpError(404, "That Data Card link doesn't work");
+  if (!res.ok) throw new HttpError(502, "The Data Card site didn't answer");
+  const svg = await res.text();
+  const start = svg.indexOf('class="now-playing-section"');
+  if (start < 0) return null;
+  const end = svg.indexOf('class="other-sections"', start);
+  const part = svg.slice(start, end < 0 ? start + 20_000 : end);
+  // Only while something is actually playing.
+  if (!/Currently Listening To/i.test(part)) return null;
+  const url = /href="(https:\/\/open\.spotify\.com\/(?:track|episode)\/\w+)"/.exec(part)?.[1] ?? null;
+  const title = /class="track-title[^"]*">([^<]+)</.exec(part)?.[1];
+  const subtitle = /class="track-subtitle-text">([^<]+)</.exec(part)?.[1] ?? "";
+  if (!title) return null;
+  return {
+    title: decode(title).slice(0, 120),
+    artists: decode(subtitle).split(" • ")[0].slice(0, 120),
+    image: url ? await coverFor(url) : null,
+    url,
+    progress: 0,
+    duration: 0,
+    playing: true,
+  };
+}
+
+/** What someone with a Data Card is playing. Cached a few seconds, so many viewers cost one fetch. */
+export function nowFromCard(userId: string) {
+  const cache = (globalThis.__draworyCardCache ??= new Map());
+  const hit = cache.get(userId);
+  if (hit && Date.now() - hit.at < 8_000) return hit.value;
+  const value = readCard(userId);
+  value.catch(() => cache.delete(userId));
+  if (cache.size > 200) cache.clear();
+  cache.set(userId, { at: Date.now(), value });
+  return value;
+}

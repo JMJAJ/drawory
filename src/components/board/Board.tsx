@@ -32,7 +32,17 @@ import { PagesBar } from "./PagesBar";
 import { NowPlaying, type PlayingItem } from "./NowPlaying";
 import { BoardContext, type BoardCtx, type Unread, type YtCommand } from "./context";
 import { mentions } from "@/lib/reactions";
-import { connectSpotify, forgetSpotify, setSharingSpotify, sharingSpotify, spotifyKey, takeSpotifyReturn } from "@/lib/client/spotify";
+import {
+  cardIdFrom,
+  connectSpotify,
+  forgetSpotify,
+  setSharingSpotify,
+  setSpotifyCard,
+  sharingSpotify,
+  spotifyCard,
+  spotifyKey,
+  takeSpotifyReturn,
+} from "@/lib/client/spotify";
 import {
   AddMediaDialog,
   CapsuleDialog,
@@ -625,12 +635,14 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
   const [spotifyLinked, setSpotifyLinked] = useState(false);
   const [shareSpotify, setShareSpotify] = useState(true);
   const [myTrack, setMyTrack] = useState<Listening | null>(null);
+  const [cardDraft, setCardDraft] = useState("");
+  const [cardError, setCardError] = useState<string | null>(null);
   const listeningRef = useRef<Listening | null>(null);
   // Linked before, or just came back from Spotify's sign-in.
   useEffect(() => {
     const back = takeSpotifyReturn();
     queueMicrotask(() => {
-      setSpotifyLinked(!!spotifyKey());
+      setSpotifyLinked(!!spotifyKey() || !!spotifyCard());
       setShareSpotify(sharingSpotify());
       if (back === "linked") showToast("Spotify connected. The room now sees what you're playing.");
       else if (back === "setup") showToast("Spotify isn't set up on this site yet (it needs a Spotify app's keys).");
@@ -650,11 +662,14 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
     const tick = async () => {
       if (document.visibilityState === "visible") {
         try {
-          const res = await fetch("/api/spotify/now", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: spotifyKey() }) });
-          if (res.status === 404 || res.status === 401) {
+          const card = spotifyCard();
+          const res = card
+            ? await fetch("/api/spotify/card", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: card }) })
+            : await fetch("/api/spotify/now", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: spotifyKey() }) });
+          if (res.status === 404 || res.status === 401 || res.status === 400) {
             forgetSpotify();
             setSpotifyLinked(false);
-            showToast("Spotify was disconnected. Connect it again from the menu.");
+            showToast(card ? "That Data Card link stopped working. Add it again from the menu." : "Spotify was disconnected. Connect it again from the menu.");
             return;
           }
           const { track } = (await res.json()) as { track: (Omit<Listening, "at"> & { playing: boolean }) | null };
@@ -3031,9 +3046,47 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
                       </button>
                     </>
                   ) : (
-                    <button type="button" className="btn" onClick={connectSpotify}>
-                      <Icon name="music" size={18} /> Share what I&apos;m listening to
-                    </button>
+                    <>
+                      <form
+                        className="spotify-card-form"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const id = cardIdFrom(cardDraft);
+                          if (!id) return setCardError("Paste the whole link from Data Card for Spotify");
+                          setSpotifyCard(id);
+                          setCardDraft("");
+                          setCardError(null);
+                          setShareSpotify(true);
+                          setSpotifyLinked(true);
+                          showToast("Connected. The room sees what you're playing within a few seconds.");
+                        }}
+                      >
+                        <input
+                          className="input"
+                          aria-label="Your Data Card for Spotify link"
+                          placeholder="Paste your Data Card for Spotify link"
+                          value={cardDraft}
+                          onChange={(e) => {
+                            setCardDraft(e.target.value);
+                            setCardError(null);
+                          }}
+                        />
+                        <button type="submit" className="btn btn-primary" disabled={!cardDraft.trim()}>
+                          Share
+                        </button>
+                      </form>
+                      {cardError && <span className="field-error">{cardError}</span>}
+                      <span className="muted spotify-help">
+                        Works with free Spotify. No link yet? Make one at{" "}
+                        <a href="https://data-card-for-spotify.herokuapp.com" target="_blank" rel="noopener noreferrer">
+                          Data Card for Spotify
+                        </a>
+                        .
+                      </span>
+                      <button type="button" className="btn btn-ghost" onClick={connectSpotify}>
+                        Or sign in with Spotify (Premium)
+                      </button>
+                    </>
                   )}
                 </div>
               )}

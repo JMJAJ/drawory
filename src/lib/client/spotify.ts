@@ -3,6 +3,32 @@
 // The private key from linking Spotify lives only in this browser.
 const KEY = "drawory:spotify";
 const SHARE = "drawory:spotify-share";
+const CARD = "drawory:spotify-card";
+
+/** A Data Card for Spotify id (free accounts): read from its public card instead of signing in. */
+export function spotifyCard() {
+  try {
+    return localStorage.getItem(CARD);
+  } catch {
+    return null;
+  }
+}
+
+/** The card id from a pasted link (…/card?user_id=…) or the bare id; null if it isn't one. */
+export function cardIdFrom(text: string) {
+  const t = text.trim();
+  const m = /[?&]user_id=([a-z0-9]{10,40})/i.exec(t) ?? /^([a-z0-9]{10,40})$/i.exec(t);
+  return m ? m[1].toLowerCase() : null;
+}
+
+export function setSpotifyCard(id: string | null) {
+  try {
+    if (id) {
+      localStorage.setItem(CARD, id);
+      localStorage.setItem(SHARE, "on");
+    } else localStorage.removeItem(CARD);
+  } catch {}
+}
 
 export function spotifyKey() {
   try {
@@ -27,6 +53,7 @@ export function setSharingSpotify(on: boolean) {
 }
 
 export function forgetSpotify() {
+  setSpotifyCard(null);
   const key = spotifyKey();
   try {
     localStorage.removeItem(KEY);
