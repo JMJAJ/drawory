@@ -899,7 +899,8 @@ interface Props {
 
 export const ElementView = memo(function ElementView({ row, selected, solo, editing, likes, remote }: Props) {
   const b = bounds(row);
-  const autoHeight = ["text", "note", "audio", "capsule", "link", "youtube", "window"].includes(row.type);
+  // A window sizes to its blocks until someone drags its height.
+  const autoHeight = ["text", "note", "audio", "capsule", "link", "youtube"].includes(row.type) || (row.type === "window" && !row.data.h);
   const autoWidth = row.type === "text";
   const resizable = RESIZABLE[row.type];
 

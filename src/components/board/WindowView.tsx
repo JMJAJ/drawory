@@ -4,7 +4,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon, type IconName } from "@/components/icons";
 import { api } from "@/lib/client/api";
 import { measuredHeights } from "@/lib/client/elements";
-import type { ElementRow, WinBlock, WinBlockKind } from "@/lib/types";
+import { stickerSrc } from "@/lib/stickers";
+import type { ElementData, ElementRow, ElementType, WinBlock, WinBlockKind } from "@/lib/types";
 import { ChatThread } from "./ChatThread";
 import { useBoard } from "./context";
 
@@ -18,6 +19,7 @@ const KINDS: { kind: WinBlockKind; label: string; icon: IconName }[] = [
   { kind: "link", label: "Link button", icon: "link" },
   { kind: "image", label: "Photo", icon: "image" },
   { kind: "divider", label: "Divider", icon: "divider" },
+  { kind: "slot", label: "Empty spot", icon: "plus" },
 ];
 const kindOf = (k: WinBlockKind) => KINDS.find((x) => x.kind === k) ?? KINDS[0];
 
@@ -51,8 +53,66 @@ function newBlock(kind: WinBlockKind, over: Partial<WinBlock> = {}): WinBlock {
     link: { title: "Link", span: 2, text: "Open link", url: "" },
     image: { title: "Photo", span: 2 },
     divider: { title: "", span: 6 },
+    slot: { title: "", span: 2 },
   }[kind] as Partial<WinBlock>;
   return { ...base, ...extra, ...over } as WinBlock;
+}
+
+/** Puts blocks after the one they were dropped on, or in place of an empty spot. */
+export function insertBlocks(blocks: readonly WinBlock[], added: WinBlock[], atId: string | null) {
+  const i = atId ? blocks.findIndex((b) => b.id === atId) : -1;
+  if (i < 0) return [...blocks, ...added];
+  const target = blocks[i];
+  if (target.kind === "slot") {
+    const [first, ...rest] = added;
+    return [...blocks.slice(0, i), { ...first, span: target.span, align: target.align, valign: target.valign }, ...rest, ...blocks.slice(i + 1)];
+  }
+  return [...blocks.slice(0, i + 1), ...added, ...blocks.slice(i + 1)];
+}
+
+/** What a board item becomes when it's dragged into a window; null if it can't go in one. */
+export function blockFromElement(row: ElementRow): WinBlock | null {
+  const d = row.data;
+  switch (row.type) {
+    case "text":
+    case "sticky":
+      return newBlock("text", { title: "", text: d.text ?? "" });
+    case "image":
+      return d.src ? newBlock("image", { title: "", src: d.src }) : null;
+    case "sticker":
+      return d.src ? newBlock("image", { title: "", src: stickerSrc(d.src) }) : null;
+    case "note":
+      return newBlock("list", { title: d.title || "List", items: (d.items ?? []).map((i) => ({ id: i.id, text: i.text, done: i.done })) });
+    case "link":
+      return d.url ? newBlock("link", { title: "", url: d.url, text: d.title || d.site || "Open link" }) : null;
+    case "youtube":
+      return d.videoId ? newBlock("link", { title: "", url: `https://youtu.be/${d.videoId}`, text: d.title || "Watch on YouTube" }) : null;
+    case "chatbox":
+      // Same id, so the conversation comes along.
+      return newBlock("chat", { id: row.id, title: d.title || "Chat" });
+    default:
+      return null;
+  }
+}
+
+export const MOVABLE_OUT: WinBlockKind[] = ["text", "image", "list", "link", "chat"];
+
+/** What a block becomes when it's moved out onto the board (without its position). */
+export function elementFromBlock(b: WinBlock): { id?: string; type: ElementType; data: Omit<ElementData, "x" | "y"> } | null {
+  switch (b.kind) {
+    case "text":
+      return { type: "sticky", data: { w: 220, h: 220, text: b.text ?? "", color: "yellow" } };
+    case "image":
+      return b.src ? { type: "image", data: { w: 320, h: 240, src: b.src } } : null;
+    case "list":
+      return { type: "note", data: { w: 260, title: b.title || "List", items: (b.items ?? []).map((i) => ({ id: i.id, text: i.text, done: !!i.done })) } };
+    case "link":
+      return b.url ? { type: "link", data: { w: 280, url: b.url, title: b.text || b.url } } : null;
+    case "chat":
+      return { id: b.id, type: "chatbox", data: { w: 320, h: 400, title: b.title || "Chat" } };
+    default:
+      return null;
+  }
 }
 
 const TEMPLATES: { id: string; label: string; hint: string; icon: IconName; title: string; blocks: () => WinBlock[] }[] = [
@@ -76,6 +136,14 @@ const TEMPLATES: { id: string; label: string; hint: string; icon: IconName; titl
     icon: "trophy",
     title: "Best of",
     blocks: () => [newBlock("ranking", { title: "Vote your favourites", span: 6 })],
+  },
+  {
+    id: "board",
+    label: "Mood board",
+    hint: "Empty spots to drag things into",
+    icon: "image",
+    title: "Mood board",
+    blocks: () => [newBlock("slot", { span: 4 }), newBlock("slot"), newBlock("slot"), newBlock("slot"), newBlock("slot")],
   },
   {
     id: "poll",
@@ -265,19 +333,17 @@ export function WindowView({ row, editing }: { row: ElementRow; editing: boolean
     }
     if (!srcs.length) return;
     const added = srcs.map((src) => newBlock("image", { src, title: "" }));
-    const next = [...current()];
-    const at = afterId ? next.findIndex((b) => b.id === afterId) : -1;
-    next.splice(at < 0 ? next.length : at + 1, 0, ...added);
-    setBlocks(next);
+    setBlocks(insertBlocks(current(), added, afterId));
     setSelId(added[0].id);
   }
 
   return (
     <div
       ref={root}
-      className={`card win${editing ? " editing" : ""}${fileOver ? " file-over" : ""}`}
+      className={`card win${editing ? " editing" : ""}${d.h ? " fixed" : ""}${fileOver ? " file-over" : ""}`}
       onDragOver={(e) => {
-        if (!editing || !e.dataTransfer.types.includes("Files")) return;
+        if (!canEdit || !e.dataTransfer.types.includes("Files")) return;
+        if (!editing && !(e.target as HTMLElement).closest(".kind-slot")) return setFileOver(false);
         e.preventDefault();
         e.stopPropagation();
         setFileOver(true);
@@ -286,7 +352,8 @@ export function WindowView({ row, editing }: { row: ElementRow; editing: boolean
         if (!e.currentTarget.contains(e.relatedTarget as Node)) setFileOver(false);
       }}
       onDrop={(e) => {
-        if (!editing || !e.dataTransfer.files.length) return;
+        if (!canEdit || !e.dataTransfer.files.length) return;
+        if (!editing && !(e.target as HTMLElement).closest(".kind-slot")) return;
         e.preventDefault();
         e.stopPropagation();
         setFileOver(false);
@@ -329,6 +396,11 @@ export function WindowView({ row, editing }: { row: ElementRow; editing: boolean
             </>
           )}
         </div>
+        {editing && d.h ? (
+          <button type="button" className="btn btn-ghost win-fit" data-interactive title="Size the window to its blocks again" onClick={() => ctx.patch(row.id, { h: undefined })}>
+            Fit height
+          </button>
+        ) : null}
         {canEdit && (
           <button
             type="button"
@@ -401,6 +473,20 @@ export function WindowView({ row, editing }: { row: ElementRow; editing: boolean
               <button type="button" className="win-tb" aria-label="Move later" title="Move later" onClick={() => move(selected.id, 1)}>
                 <Icon name="arrowRight" size={17} />
               </button>
+              {MOVABLE_OUT.includes(selected.kind) && (
+                <button
+                  type="button"
+                  className="win-tb"
+                  aria-label="Move out onto the board"
+                  title="Move out onto the board"
+                  onClick={() => {
+                    setSelId(null);
+                    ctx.moveBlockOut(row.id, selected.id);
+                  }}
+                >
+                  <Icon name="external" size={17} />
+                </button>
+              )}
               <button type="button" className="win-tb danger" aria-label="Remove block" title="Remove block" onClick={() => remove(selected.id)}>
                 <Icon name="trash" size={17} />
               </button>
@@ -454,6 +540,7 @@ export function WindowView({ row, editing }: { row: ElementRow; editing: boolean
                     editing ? <div className="win-divider-edit">Divider</div> : <hr className="win-hr" />
                   ) : (
                     <>
+                      {(editing || b.title !== "") && (
                       <header className="win-bh">
                         {editing && (
                           <span className="win-grip" title="Drag to reorder">
@@ -497,6 +584,7 @@ export function WindowView({ row, editing }: { row: ElementRow; editing: boolean
                           </button>
                         )}
                       </header>
+                      )}
                       {!isClosed && (
                         <div className={`win-bb a-${b.align ?? "left"} v-${b.valign ?? "top"}`}>
                           <BlockBody block={b} editing={editing} update={updater(b.id)} />
@@ -576,6 +664,13 @@ function BlockBody({ block, editing, update }: { block: WinBlock; editing: boole
       return <LinkBlock block={block} editing={editing} update={update} />;
     case "image":
       return <ImageBlock block={block} editing={editing} update={update} />;
+    case "slot":
+      return (
+        <div className="win-slot">
+          <Icon name="plus" size={20} />
+          <span>Drag text, a photo, a note or a chat here</span>
+        </div>
+      );
     default:
       return null;
   }

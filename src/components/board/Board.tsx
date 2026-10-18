@@ -25,7 +25,7 @@ import {
 import { displayCode, inviteLink, rememberRoom } from "@/lib/client/rooms";
 import { initials, textOn, type Me } from "@/lib/client/identity";
 import { audioPeaks, detectLink, fitWithin, imageSize, shrinkPhoto, videoSize, type DetectedLink } from "@/lib/client/media";
-import type { Activity, BoardMeta, BoardPage, ChatRow, ElementData, ElementRow, ElementType, PresenceRow } from "@/lib/types";
+import type { Activity, BoardMeta, BoardPage, ChatRow, ElementData, ElementRow, ElementType, PresenceRow, WinBlock } from "@/lib/types";
 import { PagesBar } from "./PagesBar";
 import { NowPlaying, type PlayingItem } from "./NowPlaying";
 import { BoardContext, type BoardCtx, type YtCommand } from "./context";
@@ -39,6 +39,7 @@ import {
   VoiceDialog,
 } from "./Dialogs";
 import { ElementView, StrokeSvg, type RemoteMark } from "./ElementView";
+import { blockFromElement, elementFromBlock, insertBlocks } from "./WindowView";
 import { RemoteCursor } from "./RemoteCursor";
 import { MemoryLane } from "./MemoryLane";
 import { StickerTray } from "./StickerTray";
@@ -60,7 +61,7 @@ type Gesture =
   | { kind: "pinch"; d0: number; mx: number; my: number; cam: Camera }
   | { kind: "draw"; points: number[][] }
   | { kind: "shape"; type: "rect" | "ellipse" | "arrow"; ox: number; oy: number }
-  | { kind: "move"; wx: number; wy: number; originals: ElementRow[]; moved: boolean }
+  | { kind: "move"; wx: number; wy: number; originals: ElementRow[]; moved: boolean; canDrop: boolean; into?: DropInto | null }
   | { kind: "resize"; wx: number; wy: number; original: ElementRow }
   | { kind: "erase"; originals: Map<string, ElementRow> }
   | { kind: "marquee"; wx: number; wy: number; base: string[] };
@@ -90,6 +91,9 @@ const TOOL_GROUPS: { id: Tool; label: string; icon: IconName; key?: string }[][]
     { id: "capsule", label: "Time capsule", icon: "capsule" },
   ],
 ];
+/** A window (and the block in it) that dragged items will drop into. */
+type DropInto = { winId: string; blockId: string | null };
+
 type AlignKind = "left" | "center" | "right" | "top" | "middle" | "bottom" | "across" | "down";
 const ALIGN_ACTIONS: { id: AlignKind; label: string; icon: IconName; group: number; spread?: boolean }[] = [
   { id: "left", label: "Align left edges", icon: "alignLeft", group: 0 },
@@ -1275,7 +1279,14 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
             for (const other of rowsRef.current.values()) if (other.type !== "place" && contains(area, bounds(other))) ids.add(other.id);
           }
           const originals = [...ids].map((id) => rowsRef.current.get(id)).filter((r): r is ElementRow => !!r);
-          gesture.current = { kind: "move", wx: w.x, wy: w.y, originals, moved: false };
+          gesture.current = {
+            kind: "move",
+            wx: w.x,
+            wy: w.y,
+            originals,
+            moved: false,
+            canDrop: originals.length <= 12 && originals.every((r) => r.type !== "window" && blockFromElement(r)),
+          };
           return;
         }
         // Empty canvas: draw a selection box. Shift/Ctrl adds to what's already selected.
@@ -1416,9 +1427,13 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         let dy = w.y - g.wy;
         if (!g.moved && Math.hypot(dx, dy) * cam.current.zoom < 3) break;
         g.moved = true;
+        // Over a window: it'll drop in there, so no snapping.
+        g.into = g.canDrop ? windowDropAt(e.clientX, e.clientY, g.originals) : null;
+        markDrop(g.into);
         // Snap to nearby items' edges and centres, or dock beside them. Hold Alt to place freely.
         const box = unionBounds(g.originals);
-        if (box && !e.altKey && g.originals.length <= 40) {
+        if (g.into) setGuides([]);
+        else if (box && !e.altKey && g.originals.length <= 40) {
           const moving = new Set(g.originals.map((r) => r.id));
           const others: ReturnType<typeof bounds>[] = [];
           for (const r of rowsRef.current.values()) {
@@ -1438,8 +1453,8 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         const r = g.original;
         const b = bounds(r);
         const mode = RESIZABLE[r.type];
-        const nw = Math.max(40, b.w + (w.x - g.wx));
-        let nh = Math.max(30, b.h + (w.y - g.wy));
+        const nw = Math.max(r.type === "window" ? 320 : 40, b.w + (w.x - g.wx));
+        let nh = Math.max(r.type === "window" ? 160 : 30, b.h + (w.y - g.wy));
         const data: Partial<ElementData> = {};
         if (mode === "aspect") nh = (nw * b.h) / b.w;
         if (mode === "font") {
@@ -1508,7 +1523,10 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       }
       case "move":
         setGuides([]);
-        if (g.moved) {
+        markDrop(null);
+        if (g.moved && g.into && dropIntoWindow(g.originals, g.into)) {
+          endActivity();
+        } else if (g.moved) {
           void send(
             g.originals.map((r) => ({ before: committedRef.current.get(r.id) ?? r, after: rowsRef.current.get(r.id) ?? r })),
           );
@@ -1547,6 +1565,9 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       if ((e.target as HTMLElement).closest(".dialog, .menu-panel")) return;
       // A plain scroll over a chat box's messages scrolls them (Ctrl+scroll still zooms).
       if (!e.ctrlKey && !e.metaKey && (e.target as HTMLElement).closest(".chatbox .chat-list, .chatbox .sticker-scroll")) return;
+      // Same for a window someone made shorter than its blocks.
+      const winBody = !e.ctrlKey && !e.metaKey ? (e.target as HTMLElement).closest<HTMLElement>(".win.fixed .win-body") : null;
+      if (winBody && winBody.scrollHeight > winBody.clientHeight + 1) return;
       e.preventDefault();
       setFollowing(false);
       if (e.ctrlKey || e.metaKey) {
@@ -1691,6 +1712,11 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     },
     [send, dropPreview, setEditingId, endActivity],
   );
+  // The context stays stable; this always calls the newest version.
+  const moveBlockOutRef = useRef<(winId: string, blockId: string) => Promise<void>>(async () => {});
+  useEffect(() => {
+    moveBlockOutRef.current = moveBlockOut;
+  });
   const ctx: BoardCtx = useMemo(
     () => ({
       boardId,
@@ -1705,6 +1731,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       chatFor: (thread) => threads.get(thread) ?? NO_CHAT,
       sendChat: sendTo,
       stopEditing: () => setEditingId(null),
+      moveBlockOut: (winId, blockId) => void moveBlockOutRef.current(winId, blockId),
       startEditing: (id) => {
         setSelectedId(id);
         setEditingId(id);
@@ -1832,6 +1859,70 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   }
 
   const alignOpen = alignFor === selectedIds.join();
+  /** The window under the pointer that dragged items would drop into, skipping the items themselves. */
+  function windowDropAt(x: number, y: number, moving: ElementRow[]): DropInto | null {
+    const skip = new Set(moving.map((r) => r.id));
+    for (const node of document.elementsFromPoint(x, y)) {
+      const host = (node as HTMLElement).closest<HTMLElement>("[data-el]");
+      if (!host) {
+        if ((node as HTMLElement).closest(".board-root")) return null;
+        continue;
+      }
+      if (skip.has(host.dataset.el!)) continue;
+      if (host.dataset.type !== "window") return null;
+      return { winId: host.dataset.el!, blockId: (node as HTMLElement).closest<HTMLElement>("[data-block]")?.dataset.block ?? null };
+    }
+    return null;
+  }
+  /** Highlights where a drop would land. Set straight on the page so dragging stays smooth. */
+  function markDrop(t: DropInto | null | undefined) {
+    const root = rootRef.current;
+    if (!root) return;
+    root.querySelectorAll("[data-drop-into]").forEach((n) => n.removeAttribute("data-drop-into"));
+    root.querySelectorAll("[data-drop-here]").forEach((n) => n.removeAttribute("data-drop-here"));
+    if (!t) return;
+    const host = root.querySelector(`[data-el="${t.winId}"]`);
+    host?.setAttribute("data-drop-into", "");
+    if (t.blockId) host?.querySelector(`[data-block="${t.blockId}"]`)?.setAttribute("data-drop-here", "");
+  }
+  /** Turns dragged items into blocks of a window: one change, so a single undo puts them back. */
+  function dropIntoWindow(items: ElementRow[], t: DropInto) {
+    const win = rowsRef.current.get(t.winId);
+    const added = items.map(blockFromElement);
+    if (!win || win.type !== "window" || added.some((b) => !b)) return false;
+    const blocks = insertBlocks(win.data.blocks ?? [], added as WinBlock[], t.blockId);
+    void send([
+      ...items.map((r) => ({ before: committedRef.current.get(r.id) ?? r, after: null })),
+      { before: committedRef.current.get(win.id) ?? win, after: { ...win, data: { ...win.data, blocks }, updated_at: new Date() } },
+    ]);
+    setSelectedId(win.id);
+    return true;
+  }
+  async function moveBlockOut(winId: string, blockId: string) {
+    const win = rowsRef.current.get(winId);
+    const block = win?.data.blocks?.find((b) => b.id === blockId);
+    const made = block && elementFromBlock(block);
+    if (!win || !block || !made) return;
+    const data: ElementData = { ...made.data, x: 0, y: 0, page: win.data.page };
+    if (made.type === "image" && data.src) {
+      const size = await imageSize(data.src).catch(() => null);
+      if (size) Object.assign(data, fitWithin(size.w, size.h, 320));
+    }
+    // Beside the window, at the height of the block.
+    const wb = bounds(win);
+    const blockEl = rootRef.current?.querySelector<HTMLElement>(`[data-el="${winId}"] [data-block="${blockId}"]`);
+    const winEl = rootRef.current?.querySelector<HTMLElement>(`[data-el="${winId}"]`);
+    const offset = blockEl && winEl ? (blockEl.getBoundingClientRect().top - winEl.getBoundingClientRect().top) / cam.current.zoom : 0;
+    data.x = Math.round(wb.x + wb.w + 40);
+    data.y = Math.round(wb.y + offset);
+    const row = { ...mkRow(made.type, data, nextZ(), me.id), ...(made.id ? { id: made.id } : {}) };
+    const latest = rowsRef.current.get(winId) ?? win;
+    void send([
+      { before: committedRef.current.get(winId) ?? latest, after: { ...latest, data: { ...latest.data, blocks: (latest.data.blocks ?? []).filter((b) => b.id !== blockId) }, updated_at: new Date() } },
+      { before: null, after: row },
+    ]);
+  }
+
   /** Lines up the selected items, or spaces them evenly, moving each by whole units. */
   function alignSelection(how: AlignKind) {
     const items = selectedRows.map((r) => ({ r, b: bounds(r) }));

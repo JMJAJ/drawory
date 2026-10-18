@@ -1176,3 +1176,23 @@ textarea.sticky-text { border: 0; outline: none; resize: none; background: trans
 }
 .align-sep { width: 1px; height: 20px; background: var(--border-strong); margin: 0 4px; }
 .snap-guide { position: absolute; z-index: 999997; pointer-events: none; background: var(--sel, var(--accent)); }
+
+/* ---------- Windows: resizing and empty spots ---------- */
+.win.fixed { height: 100%; }
+.win.fixed .win-body { flex: 1; min-height: 0; overflow: auto; }
+.win.fixed .win-grid { min-height: 100%; align-content: stretch; }
+.win-fit { height: 36px; padding: 0 12px; font-size: 13px; flex: none; }
+.win-blk.kind-slot { border: 0; background: transparent; }
+.win-blk.kind-slot .win-bb { padding: 0; }
+.win.editing .win-blk.kind-slot .win-bb { padding: 0 12px 12px; }
+.win-slot {
+  flex: 1; min-height: 120px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  padding: 14px; border: 1.5px dashed var(--border-strong); border-radius: 14px; color: var(--muted); font-size: 13px; text-align: center;
+  transition: border-color 0.15s, background 0.15s;
+}
+[data-drop-into] > .win { outline: 2px solid var(--sel, var(--accent)); outline-offset: 4px; }
+.win-blk[data-drop-here] { box-shadow: 0 0 0 3px color-mix(in srgb, var(--sel, var(--accent)) 35%, transparent); }
+.win-blk.kind-slot[data-drop-here] { box-shadow: none; }
+.win-blk[data-drop-here] .win-slot, .win.file-over .kind-slot .win-slot {
+  border-color: var(--sel, var(--accent)); background: color-mix(in srgb, var(--sel, var(--accent)) 10%, transparent); color: var(--text);
+}

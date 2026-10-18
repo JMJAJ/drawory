@@ -46,7 +46,7 @@ export const RESIZABLE: Partial<Record<ElementType, "free" | "aspect" | "width" 
   audio: "width",
   chatbox: "free",
   sticky: "free",
-  window: "width",
+  window: "free",
 };
 
 /** Heights of auto-sized elements as they last rendered here, so selection and hit tests match. */
@@ -64,7 +64,7 @@ export function bounds(el: Pick<ElementRow, "type" | "data">) {
     capsule: [d.w ?? 300, 190],
     link: [d.w ?? 280, d.image ? 240 : 130],
     sticky: [d.w ?? 200, d.h ?? 200],
-    window: [d.w ?? 640, measuredHeights.get((el as { id?: string }).id ?? "") ?? 120 + (d.blocks?.length ?? 0) * 110],
+    window: [d.w ?? 640, d.h ?? measuredHeights.get((el as { id?: string }).id ?? "") ?? 120 + (d.blocks?.length ?? 0) * 110],
     // 16:9 video plus 10 px padding each side and the title row.
     youtube: [d.w ?? 480, ((d.w ?? 480) - 20) * (9 / 16) + 82],
   };

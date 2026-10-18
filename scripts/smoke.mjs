@@ -174,6 +174,25 @@ check("Removing a chat block deletes its messages", await waitFor(() => !(chSub.
 check("Other chat blocks keep theirs", (chSub.getSnapshot().data ?? []).some((m) => m.thread === chatB));
 await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [{ op: "delete", id: winId }] }));
 check("Deleting a window deletes its chats", await waitFor(() => !(chSub.getSnapshot().data ?? []).some((m) => m.thread === chatB)));
+// 10d. A chat box dragged into a window (and back out) keeps its conversation
+const moveBox = crypto.randomUUID();
+const moveWin = crypto.randomUUID();
+await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [{ op: "upsert", id: moveBox, type: "chatbox", z: 7, data: { x: 0, y: 0, w: 320, h: 400, title: "Chat" } }] }));
+await call(`/api/boards/${BOARD}/messages`, json({ user_id: "smoke-user", name: "Smoke", color: "#2F6BD0", body: "travelling", thread: moveBox }));
+check("Travelling message streams", await waitFor(() => (chSub.getSnapshot().data ?? []).some((m) => m.thread === moveBox)));
+await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [
+  { op: "delete", id: moveBox },
+  { op: "upsert", id: moveWin, type: "window", z: 8, data: { x: 0, y: 0, w: 640, blocks: [{ id: moveBox, kind: "chat", span: 6 }] } },
+] }));
+await new Promise((r) => setTimeout(r, 1500));
+check("Chat box dragged into a window keeps its messages", (chSub.getSnapshot().data ?? []).some((m) => m.thread === moveBox));
+await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [
+  { op: "upsert", id: moveWin, type: "window", z: 8, data: { x: 0, y: 0, w: 640, blocks: [] } },
+  { op: "upsert", id: moveBox, type: "chatbox", z: 9, data: { x: 700, y: 0, w: 320, h: 400, title: "Chat" } },
+] }));
+await new Promise((r) => setTimeout(r, 1500));
+check("Chat block moved back out keeps its messages", (chSub.getSnapshot().data ?? []).some((m) => m.thread === moveBox));
+await call(`/api/boards/${BOARD}/elements`, json({ author: "smoke", ops: [{ op: "delete", id: moveBox }, { op: "delete", id: moveWin }] }));
 check("Room chat messages are untouched", (chSub.getSnapshot().data ?? []).some((m) => m.body === "hello room"));
 
 // 11. Pages

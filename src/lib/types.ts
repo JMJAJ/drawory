@@ -54,7 +54,7 @@ export interface ElementData {
   blocks?: WinBlock[];
 }
 
-export type WinBlockKind = "ranking" | "list" | "poll" | "chat" | "countdown" | "text" | "link" | "image" | "divider";
+export type WinBlockKind = "ranking" | "list" | "poll" | "chat" | "countdown" | "text" | "link" | "image" | "divider" | "slot";
 
 /** One block in a window. Width is in sixths of the window; the window grows to fit its blocks. */
 export interface WinBlock {

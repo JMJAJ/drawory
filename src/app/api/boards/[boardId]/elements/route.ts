@@ -63,12 +63,24 @@ export const POST = handler<Ctx>(async (req, { params }) => {
          and not exists (
            select 1 from jsonb_array_elements(coalesce(i.data->'blocks', '[]'::jsonb)) nb where nb->>'id' = b->>'id'
          )
+         -- Moved out onto the board as a chat box with the same id: the conversation goes with it.
+         and not exists (select 1 from input i2 where i2.op = 'upsert' and i2.id::text = b->>'id')
+     ),
+     -- Chat boxes dragged into a window become chat blocks with the same id and keep their messages.
+     kept_threads as (
+       select nb->>'id' as id
+       from input i
+       cross join jsonb_array_elements(case when jsonb_typeof(i.data->'blocks') = 'array' then i.data->'blocks' else '[]'::jsonb end) nb
+       where i.op = 'upsert' and i.type = 'window'
      ),
      -- A deleted chat box or chat block takes its conversation with it.
      chat_gone as (
        delete from messages
        where board_id = $1
-         and (thread in (select id from del where type = 'chatbox') or thread::text in (select id from gone_blocks))
+         and (
+           thread in (select id from del where type = 'chatbox' and id::text not in (select id from kept_threads))
+           or thread::text in (select id from gone_blocks)
+         )
      ),
      ev as (
        insert into element_events (board_id, element_id, op, type, data, z, author)
