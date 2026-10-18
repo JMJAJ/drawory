@@ -87,6 +87,13 @@ async function applyBatch(db: import("pg").PoolClient, boardId: string, ops: unk
        delete from elements where board_id = $1 and id in (select id from input where op = 'delete')
        returning id, type
      ),
+     -- Chat blocks in windows being saved now (dragged in from the board or from another window) keep their messages.
+     kept_threads as (
+       select nb->>'id' as id
+       from input i
+       cross join jsonb_array_elements(case when jsonb_typeof(i.data->'blocks') = 'array' then i.data->'blocks' else '[]'::jsonb end) nb
+       where i.op = 'upsert' and i.type = 'window'
+     ),
      -- Chat blocks a window no longer has (or the whole window was deleted). Data-modifying CTEs
      -- all see the table as it was, so this reads the window before this change.
      gone_blocks as (
@@ -100,13 +107,8 @@ async function applyBatch(db: import("pg").PoolClient, boardId: string, ops: unk
          )
          -- Moved out onto the board as a chat box with the same id: the conversation goes with it.
          and not exists (select 1 from input i2 where i2.op = 'upsert' and i2.id::text = b->>'id')
-     ),
-     -- Chat boxes dragged into a window become chat blocks with the same id and keep their messages.
-     kept_threads as (
-       select nb->>'id' as id
-       from input i
-       cross join jsonb_array_elements(case when jsonb_typeof(i.data->'blocks') = 'array' then i.data->'blocks' else '[]'::jsonb end) nb
-       where i.op = 'upsert' and i.type = 'window'
+         -- Or moved into another window.
+         and b->>'id' not in (select id from kept_threads)
      ),
      -- A deleted chat box or chat block takes its conversation with it.
      chat_gone as (

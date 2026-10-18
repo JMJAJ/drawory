@@ -29,7 +29,8 @@ import type { Activity, BoardMeta, BoardPage, ChatRow, ElementData, ElementOp, E
 import { applyEdit, type Edit } from "@/lib/edits";
 import { PagesBar } from "./PagesBar";
 import { NowPlaying, type PlayingItem } from "./NowPlaying";
-import { BoardContext, type BoardCtx, type YtCommand } from "./context";
+import { BoardContext, type BoardCtx, type Unread, type YtCommand } from "./context";
+import { mentions } from "@/lib/reactions";
 import {
   AddMediaDialog,
   CapsuleDialog,
@@ -40,6 +41,8 @@ import {
   VoiceDialog,
 } from "./Dialogs";
 import { ElementView, StrokeSvg, type RemoteMark } from "./ElementView";
+import { SearchPanel, type SearchHit } from "./SearchPanel";
+import { Minimap } from "./Minimap";
 import { blockFromElement, elementFromBlock, insertBlocks } from "./WindowView";
 import { RemoteCursor } from "./RemoteCursor";
 import { MemoryLane } from "./MemoryLane";
@@ -121,9 +124,12 @@ const STATUS: Record<SyncStatus, { label: string; title: string }> = {
   offline: { label: "Offline", title: "Can't reach the board right now. Tap to retry." },
 };
 
+/** Board items on the clipboard are text with this prefix, so they paste back as items (in any room). */
+const CLIP_PREFIX = "drawory-items:";
 const DEFAULT_PAGES: BoardPage[] = [{ id: "main", name: "Page 1" }];
 const pageOf = (r: { data: ElementData }) => r.data.page ?? "main";
 const NO_CHAT: readonly ChatRow[] = [];
+const NO_UNREAD: Unread = { count: 0, mention: false, firstId: null };
 /** Types you can open for editing (double-click, double-tap or the pen button). */
 const EDITABLE: ElementType[] = ["text", "note", "image", "chatbox", "sticky", "window"];
 
@@ -598,7 +604,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     (ids: string[]) => {
       const changes = ids
         .map((id) => rowsRef.current.get(id))
-        .filter((r): r is ElementRow => !!r)
+        .filter((r): r is ElementRow => !!r && !r.data.locked)
         .map((r) => ({ before: committedRef.current.get(r.id) ?? r, after: null }));
       void send(changes);
       setSelectedId(null);
@@ -852,6 +858,126 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     }
     return map;
   }, [allChat]);
+  /* ---------- Unread chats ---------- */
+  // What I've read, per conversation (newest message id), kept on this device.
+  const seenKey = `drawory:seen:${boardId}`;
+  const [seen, setSeen] = useState<Record<string, number>>(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(seenKey) ?? "null");
+      if (stored && typeof stored === "object") return stored;
+    } catch {}
+    // First visit on this device: older messages don't count as unread.
+    return { __since: Date.now() };
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(seenKey, JSON.stringify(seen));
+    } catch {}
+  }, [seen, seenKey]);
+  const markSeen = useCallback((thread: string, newestId: string) => {
+    const n = Number(newestId);
+    setSeen((prev) => (n <= (prev[thread] ?? 0) ? prev : { ...prev, [thread]: n }));
+  }, []);
+  /** Where each conversation lives on the board: a chat box, or the window holding the chat block. */
+  const threadHomes = useMemo(() => {
+    const homes = new Map<string, ElementRow>();
+    for (const r of committed.values()) {
+      if (r.type === "chatbox") homes.set(r.id, r);
+      if (r.type === "window") for (const b of r.data.blocks ?? []) if (b.kind === "chat") homes.set(b.id, r);
+    }
+    return homes;
+  }, [committed]);
+  const unreadBy = useMemo(() => {
+    const out = new Map<string, Unread>();
+    const since = seen.__since ?? 0;
+    for (const [thread, msgs] of threads) {
+      if (!threadHomes.has(thread)) continue;
+      let count = 0;
+      let mention = false;
+      let firstId: string | null = null;
+      for (const m of msgs) {
+        if (m.user_id === me.id || Number(m.id) <= (seen[thread] ?? 0) || m.created_at.getTime() <= since) continue;
+        count++;
+        mention ||= mentions(m.body, me.name);
+        firstId = m.id; // newest first, so this ends on the oldest unread
+      }
+      if (count) out.set(thread, { count, mention, firstId });
+    }
+    return out;
+  }, [threads, threadHomes, seen, me.id, me.name]);
+  const [highlightMsg, setHighlightMsg] = useState<string | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const allRows = useMemo(() => [...committed.values()], [committed]);
+  function jumpToHit(hit: SearchHit) {
+    setSearchOpen(false);
+    jumpToElement(hit.elementId);
+    if (hit.messageId) setHighlightMsg(hit.messageId);
+  }
+  const [showMap, setShowMap] = useState(() => {
+    try {
+      return localStorage.getItem("drawory:minimap") !== "off";
+    } catch {
+      return true;
+    }
+  });
+  function toggleMap(on: boolean) {
+    setShowMap(on);
+    try {
+      localStorage.setItem("drawory:minimap", on ? "on" : "off");
+    } catch {}
+  }
+  const inbox = useMemo(() => {
+    let count = 0;
+    let mention = false;
+    let pick: { thread: string; u: Unread } | null = null;
+    for (const [thread, u] of unreadBy) {
+      count += u.count;
+      mention ||= u.mention;
+      if (!pick || (u.mention && !pick.u.mention)) pick = { thread, u };
+    }
+    const home = pick ? threadHomes.get(pick.thread) : null;
+    const title = home ? (home.type === "chatbox" ? home.data.title || "Chat" : home.data.blocks?.find((b) => b.id === pick!.thread)?.title || home.data.title || "Window") : "";
+    return { count, mention, pick, title };
+  }, [unreadBy, threadHomes]);
+  function jumpToUnread() {
+    const p = inbox.pick;
+    const home = p && threadHomes.get(p.thread);
+    if (!p || !home) return;
+    jumpToElement(home.id);
+    setHighlightMsg(p.u.firstId);
+  }
+  // Someone @mentions me: say so, with a button to go there.
+  const told = useRef(new Set<string>());
+  useEffect(() => {
+    for (const [thread, msgs] of threads) {
+      const u = unreadBy.get(thread);
+      if (!u?.mention) continue;
+      const m = msgs.find((x) => x.user_id !== me.id && mentions(x.body, me.name));
+      if (!m || told.current.has(m.id)) continue;
+      told.current.add(m.id);
+      const home = threadHomes.get(thread);
+      if (!home) continue;
+      const preview = m.body.length > 60 ? `${m.body.slice(0, 60)}…` : m.body;
+      queueMicrotask(() =>
+        showToast(`${m.name}: ${preview}`, false, {
+          label: "Jump",
+          run: () => {
+            jumpToElement(home.id);
+            setHighlightMsg(m.id);
+          },
+        }),
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- jumpToElement is recreated each render
+  }, [unreadBy]);
+  const react = useCallback(
+    (id: string, emoji: string) => {
+      api.react(boardId, { id, emoji, user_id: me.id }).catch((e) => showToast(e instanceof Error ? e.message : "Couldn't react"));
+    },
+    [boardId, me.id, showToast],
+  );
+  const people = useMemo(() => online.map((p) => ({ name: p.name, color: p.color })), [online]);
+
   const sendTo = useCallback(
     (thread: string | null, body: string) => api.sendMessage(boardId, { user_id: me.id, name: me.name, color: me.color, body, thread }),
     [boardId, me],
@@ -1005,8 +1131,9 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     if (id === page) switchPage(rest[0].id);
   }
   function clearPage() {
-    const ids = [...rowsRef.current.keys()];
-    if (!ids.length) return;
+    // Locked things (a background, a title) survive a clear.
+    const ids = [...rowsRef.current.values()].filter((r) => !r.data.locked).map((r) => r.id);
+    if (!ids.length) return showToast("Nothing to clear. Locked things stay.");
     deleteIds(ids);
     showToast(`Cleared ${ids.length} ${ids.length === 1 ? "thing" : "things"}`, false, { label: "Undo", run: undo });
   }
@@ -1165,7 +1292,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         const id = (node as HTMLElement).closest?.("[data-el]")?.getAttribute("data-el");
         if (!id || g.originals.has(id)) continue;
         const row = rowsRef.current.get(id);
-        if (!row || row.type === "place") continue;
+        if (!row || row.type === "place" || row.data.locked) continue;
         g.originals.set(id, committedRef.current.get(id) ?? row);
         hits.push({ id, row: null });
       }
@@ -1259,7 +1386,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       case "select": {
         if (target.closest("[data-handle]") && selectedId) {
           const original = rowsRef.current.get(selectedId);
-          if (original) gesture.current = { kind: "resize", wx: w.x, wy: w.y, original };
+          if (original && !original.data.locked) gesture.current = { kind: "resize", wx: w.x, wy: w.y, original };
           return;
         }
         if (elId) {
@@ -1270,7 +1397,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
             const last = lastTap.current;
             const again = last?.id === elId && e.timeStamp - last.t < DOUBLE_TAP_MS && Math.hypot(e.clientX - last.x, e.clientY - last.y) < 30;
             lastTap.current = again ? null : { id: elId, t: e.timeStamp, x: e.clientX, y: e.clientY };
-            if (again && EDITABLE.includes(row.type)) {
+            if (again && EDITABLE.includes(row.type) && !row.data.locked) {
               primeKeyboard(e.pointerType);
               setSelectedId(elId);
               setEditingId(elId);
@@ -1279,12 +1406,13 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
           }
           if (e.shiftKey || e.ctrlKey || e.metaKey) {
             // Add to or remove from the selection, like Ctrl/Shift-click in a file manager.
-            setSelectedIds((ids) => (ids.includes(elId) ? ids.filter((i) => i !== elId) : [...ids, elId]));
+            const members = withGroups([elId]);
+            setSelectedIds((ids) => (ids.includes(elId) ? ids.filter((i) => !members.includes(i)) : [...new Set([...ids, ...members])]));
             return;
           }
-          // Dragging any selected item moves the whole selection.
-          const group = selectedSet.has(elId) ? selectedIds : [elId];
-          if (!selectedSet.has(elId)) setSelectedId(elId);
+          // Dragging any selected item moves the whole selection (and the rest of its group).
+          const group = selectedSet.has(elId) ? selectedIds : withGroups([elId]);
+          if (!selectedSet.has(elId)) setSelectedIds(group);
           const ids = new Set(group);
           for (const id of group) {
             const r = rowsRef.current.get(id);
@@ -1292,7 +1420,9 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
             const area = bounds(r);
             for (const other of rowsRef.current.values()) if (other.type !== "place" && contains(area, bounds(other))) ids.add(other.id);
           }
-          const originals = [...ids].map((id) => rowsRef.current.get(id)).filter((r): r is ElementRow => !!r);
+          // Locked items stay where they are.
+          const originals = [...ids].map((id) => rowsRef.current.get(id)).filter((r): r is ElementRow => !!r && !r.data.locked);
+          if (!originals.length) return;
           gesture.current = {
             kind: "move",
             wx: w.x,
@@ -1496,9 +1626,11 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
           const b = bounds(r);
           // Touching is enough, except for places, which must be fully inside (they're big).
           const touches = b.x < box.x + box.w && b.x + b.w > box.x && b.y < box.y + box.h && b.y + b.h > box.y;
+          // A selection box sweeps past locked things (a background, say); click them to pick them.
+          if (r.data.locked) continue;
           if (r.type === "place" ? contains(box, b) : touches) hit.push(r.id);
         }
-        setSelectedIds([...new Set([...g.base, ...hit])]);
+        setSelectedIds([...new Set([...g.base, ...withGroups(hit)])]);
         break;
       }
     }
@@ -1568,7 +1700,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     if (tool !== "select") return;
     const id = (e.target as HTMLElement).closest("[data-el]")?.getAttribute("data-el");
     const row = id ? rowsRef.current.get(id) : null;
-    if (row && EDITABLE.includes(row.type)) setEditingId(row.id);
+    if (row && EDITABLE.includes(row.type) && !row.data.locked) setEditingId(row.id);
   }
 
   // Wheel: pinch-zoom on trackpads (ctrl) and ctrl/cmd+wheel zoom, plain wheel pans.
@@ -1636,6 +1768,23 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
         e.preventDefault();
         setTool("select");
         setSelectedIds([...rowsRef.current.keys()]);
+      } else if ((mod && e.key.toLowerCase() === "f") || (e.key === "/" && !mod)) {
+        e.preventDefault();
+        setSearchOpen(true);
+      } else if (mod && e.key.toLowerCase() === "d" && selectedIds.length && !laneOpen) {
+        e.preventDefault();
+        duplicateSelection();
+      } else if (mod && e.key.toLowerCase() === "g" && selectedIds.length && !laneOpen) {
+        e.preventDefault();
+        toggleGroup();
+      } else if (mod && e.shiftKey && e.key.toLowerCase() === "l" && selectedIds.length && !laneOpen) {
+        e.preventDefault();
+        toggleLock();
+      } else if (e.key.startsWith("Arrow") && selectedIds.length && !laneOpen) {
+        e.preventDefault();
+        const step = e.shiftKey ? 20 : 2;
+        const dir = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key] ?? [0, 0];
+        nudgeSelection(dir[0] * step, dir[1] * step);
       } else if ((e.key === "Delete" || e.key === "Backspace") && selectedIds.length && !laneOpen) {
         e.preventDefault();
         deleteIds(selectedIds);
@@ -1652,8 +1801,38 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.key === " ") setSpaceHeld(false);
     };
+    const onCopy = (e: ClipboardEvent, cut = false) => {
+      if (isEditable(e.target) || dialog || laneOpen || !selectedIds.length) return;
+      const picked = selectedIds.map((id) => rowsRef.current.get(id)).filter((r): r is ElementRow => !!r);
+      if (!picked.length) return;
+      e.preventDefault();
+      e.clipboardData?.setData("text/plain", CLIP_PREFIX + JSON.stringify(picked.map((r) => ({ type: r.type, data: r.data }))));
+      if (cut) deleteIds(picked.map((r) => r.id));
+      showToast(cut ? "Cut. Paste it anywhere, even in another room." : "Copied. Paste it anywhere, even in another room.");
+    };
+    const onCut = (e: ClipboardEvent) => onCopy(e, true);
     const onPaste = (e: ClipboardEvent) => {
       if (isEditable(e.target) || dialog || laneOpen) return;
+      const clip = e.clipboardData?.getData("text/plain") ?? "";
+      if (clip.startsWith(CLIP_PREFIX)) {
+        e.preventDefault();
+        try {
+          const items = (JSON.parse(clip.slice(CLIP_PREFIX.length)) as { type: ElementType; data: ElementData }[]).filter(
+            (x) => x && typeof x.type === "string" && x.data && typeof x.data.x === "number",
+          );
+          const fake = items.map((x) => ({ ...makeRow(x.type, x.data, 0, me.id) }));
+          const box = unionBounds(fake);
+          if (!box) return;
+          const c = centerWorld();
+          const copies = cloneRows(fake, c.x - (box.x + box.w / 2), c.y - (box.y + box.h / 2));
+          void send(copies.map((r) => ({ before: null, after: r })));
+          setTool("select");
+          setSelectedIds(copies.map((r) => r.id));
+        } catch {
+          showToast("Couldn't paste that.");
+        }
+        return;
+      }
       const files = Array.from(e.clipboardData?.files ?? []);
       if (files.length) {
         e.preventDefault();
@@ -1673,7 +1852,11 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     window.addEventListener("keydown", onKey);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("paste", onPaste);
+    window.addEventListener("copy", onCopy);
+    window.addEventListener("cut", onCut);
     return () => {
+      window.removeEventListener("copy", onCopy);
+      window.removeEventListener("cut", onCut);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("paste", onPaste);
@@ -1727,9 +1910,9 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     [send, dropPreview, setEditingId, endActivity],
   );
   // The context stays stable; this always calls the newest version.
-  const moveBlockOutRef = useRef<(winId: string, blockId: string) => Promise<void>>(async () => {});
+  const moveBlockOutRef = useRef<{ out: typeof moveBlockOut; to: typeof moveBlockTo } | null>(null);
   useEffect(() => {
-    moveBlockOutRef.current = moveBlockOut;
+    moveBlockOutRef.current = { out: moveBlockOut, to: moveBlockTo };
   });
   const ctx: BoardCtx = useMemo(
     () => ({
@@ -1744,9 +1927,15 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       finishText,
       reportTyping,
       chatFor: (thread) => threads.get(thread) ?? NO_CHAT,
+      react,
+      markSeen,
+      unread: (thread) => unreadBy.get(thread) ?? NO_UNREAD,
+      people,
+      highlightMsg,
       sendChat: sendTo,
       stopEditing: () => setEditingId(null),
-      moveBlockOut: (winId, blockId) => void moveBlockOutRef.current(winId, blockId),
+      moveBlockOut: (winId, blockId, at) => void moveBlockOutRef.current?.out(winId, blockId, at),
+      moveBlockTo: (from, blockId, to, near) => moveBlockOutRef.current?.to(from, blockId, to, near),
       startEditing: (id) => {
         setSelectedId(id);
         setEditingId(id);
@@ -1758,7 +1947,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       openCapsule: (id) => setDialog({ kind: "capsuleOpen", id, title: rowsRef.current.get(id)?.data.title || "Time capsule" }),
       addToCapsule: (id) => setDialog({ kind: "capsuleNote", id }),
     }),
-    [boardId, me, laneOpen, camera.zoom, watchers, serverNow, patch, applyEditTo, finishText, reportTyping, threads, sendTo, sendYt, onYt, onListener, setEditingId, setSelectedId],
+    [boardId, me, laneOpen, camera.zoom, watchers, serverNow, patch, applyEditTo, finishText, reportTyping, threads, react, markSeen, unreadBy, people, highlightMsg, sendTo, sendYt, onYt, onListener, setEditingId, setSelectedId],
   );
 
   /* ---------- Others' live activity ---------- */
@@ -1874,6 +2063,59 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   }
 
   const alignOpen = alignFor === selectedIds.join();
+  const isGroup = selectedRows.length > 1 && selectedRows.every((r) => r.data.group && r.data.group === selectedRows[0].data.group);
+  const allLocked = selectedRows.length > 0 && selectedRows.every((r) => r.data.locked);
+  /** The ids plus everything grouped with them. */
+  function withGroups(ids: string[]) {
+    const groups = new Set(ids.map((id) => rowsRef.current.get(id)?.data.group).filter(Boolean));
+    if (!groups.size) return ids;
+    const out = new Set(ids);
+    for (const r of rowsRef.current.values()) if (r.data.group && groups.has(r.data.group)) out.add(r.id);
+    return [...out];
+  }
+  /** Copies of items, shifted by dx/dy, with fresh ids (and fresh groups, blocks and chats). */
+  function cloneRows(src: ElementRow[], dx: number, dy: number) {
+    const groups = new Map<string, string>();
+    let z = nextZ();
+    return src
+      .filter((r) => r.type !== "capsule")
+      .map((r) => {
+        const data: ElementData = { ...r.data, x: Math.round(r.data.x + dx), y: Math.round(r.data.y + dy), likes: undefined, locked: undefined };
+        if (data.group) {
+          if (!groups.has(data.group)) groups.set(data.group, newId());
+          data.group = groups.get(data.group);
+        }
+        if (data.blocks) data.blocks = data.blocks.map((b) => ({ ...b, id: newId(), votes: {} }));
+        return mkRow(r.type, data, z++, me.id);
+      });
+  }
+  function duplicateSelection() {
+    const src = selectedIdsRef.current.map((id) => rowsRef.current.get(id)).filter((r): r is ElementRow => !!r);
+    const copies = cloneRows(src, 32, 32);
+    if (!copies.length) return;
+    void send(copies.map((r) => ({ before: null, after: r })));
+    setSelectedIds(copies.map((r) => r.id));
+  }
+  function nudgeSelection(dx: number, dy: number) {
+    const rowsToMove = selectedIdsRef.current.map((id) => rowsRef.current.get(id)).filter((r): r is ElementRow => !!r && !r.data.locked);
+    if (!rowsToMove.length) return;
+    void send(rowsToMove.map((r) => ({ before: committedRef.current.get(r.id) ?? r, after: { ...r, data: { ...r.data, x: r.data.x + dx, y: r.data.y + dy } } })));
+  }
+  function toggleGroup() {
+    const rowsNow = selectedIdsRef.current.map((id) => rowsRef.current.get(id)).filter((r): r is ElementRow => !!r);
+    const grouped = rowsNow.length > 1 && rowsNow.every((r) => r.data.group && r.data.group === rowsNow[0].data.group);
+    if (rowsNow.length < 2) return;
+    const g = grouped ? undefined : newId();
+    void send(rowsNow.map((r) => ({ before: committedRef.current.get(r.id) ?? r, after: { ...r, data: { ...r.data, group: g } } })));
+    showToast(grouped ? "Ungrouped" : `Grouped ${rowsNow.length} things`);
+  }
+  function toggleLock() {
+    const rowsNow = selectedIdsRef.current.map((id) => rowsRef.current.get(id)).filter((r): r is ElementRow => !!r);
+    if (!rowsNow.length) return;
+    const lock = !rowsNow.every((r) => r.data.locked);
+    void send(rowsNow.map((r) => ({ before: committedRef.current.get(r.id) ?? r, after: { ...r, data: { ...r.data, locked: lock || undefined } } })));
+  }
+
   /** The window under the pointer that dragged items would drop into, skipping the items themselves. */
   function windowDropAt(x: number, y: number, moving: ElementRow[]): DropInto | null {
     const skip = new Set(moving.map((r) => r.id));
@@ -1913,7 +2155,18 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     setSelectedId(win.id);
     return true;
   }
-  async function moveBlockOut(winId: string, blockId: string) {
+  function moveBlockTo(fromId: string, blockId: string, toId: string, nearBlock: string | null) {
+    const from = rowsRef.current.get(fromId);
+    const to = rowsRef.current.get(toId);
+    const block = from?.data.blocks?.find((b) => b.id === blockId);
+    if (!from || !to || !block || from.id === to.id) return;
+    void send([
+      { before: committedRef.current.get(fromId) ?? from, after: { ...from, data: { ...from.data, blocks: (from.data.blocks ?? []).filter((b) => b.id !== blockId) }, updated_at: new Date() } },
+      { before: committedRef.current.get(toId) ?? to, after: { ...to, data: { ...to.data, blocks: insertBlocks(to.data.blocks ?? [], [block], nearBlock) }, updated_at: new Date() } },
+    ]);
+  }
+  /** at: where on screen it was dropped; otherwise it goes beside the window. */
+  async function moveBlockOut(winId: string, blockId: string, at?: { x: number; y: number }) {
     const win = rowsRef.current.get(winId);
     const block = win?.data.blocks?.find((b) => b.id === blockId);
     const made = block && elementFromBlock(block);
@@ -1928,8 +2181,14 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     const blockEl = rootRef.current?.querySelector<HTMLElement>(`[data-el="${winId}"] [data-block="${blockId}"]`);
     const winEl = rootRef.current?.querySelector<HTMLElement>(`[data-el="${winId}"]`);
     const offset = blockEl && winEl ? (blockEl.getBoundingClientRect().top - winEl.getBoundingClientRect().top) / cam.current.zoom : 0;
-    data.x = Math.round(wb.x + wb.w + 40);
-    data.y = Math.round(wb.y + offset);
+    if (at) {
+      const p = toWorld(at.x, at.y);
+      data.x = Math.round(p.x - (data.w ?? 200) / 2);
+      data.y = Math.round(p.y - 20);
+    } else {
+      data.x = Math.round(wb.x + wb.w + 40);
+      data.y = Math.round(wb.y + offset);
+    }
     const row = { ...mkRow(made.type, data, nextZ(), me.id), ...(made.id ? { id: made.id } : {}) };
     const latest = rowsRef.current.get(winId) ?? win;
     void send([
@@ -2188,6 +2447,30 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
           </button>
           {selectedRows.length > 1 && <span className="sel-count">{selectedRows.length} selected</span>}
           {selectedRows.length > 1 && (
+            <button
+              type="button"
+              className="icon-btn sm"
+              aria-label={isGroup ? "Ungroup" : "Group"}
+              title={isGroup ? "Ungroup (Ctrl+G)" : "Group so they move together (Ctrl+G)"}
+              onClick={toggleGroup}
+            >
+              <Icon name={isGroup ? "ungroup" : "group"} size={18} />
+            </button>
+          )}
+          <button
+            type="button"
+            className="icon-btn sm"
+            aria-label={allLocked ? "Unlock" : "Lock"}
+            aria-pressed={allLocked}
+            title={allLocked ? "Unlock (Ctrl+Shift+L)" : "Lock in place (Ctrl+Shift+L)"}
+            onClick={toggleLock}
+          >
+            <Icon name={allLocked ? "lock" : "unlock"} size={18} />
+          </button>
+          <button type="button" className="icon-btn sm" aria-label="Duplicate" title="Duplicate (Ctrl+D)" onClick={duplicateSelection}>
+            <Icon name="copy" size={18} />
+          </button>
+          {selectedRows.length > 1 && (
             <div className="align-wrap">
               <button
                 type="button"
@@ -2370,6 +2653,16 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
               <button
                 type="button"
                 className="icon-btn surface theme-btn"
+                aria-label="Search the board"
+                title="Search (Ctrl+F)"
+                aria-expanded={searchOpen}
+                onClick={() => setSearchOpen((o) => !o)}
+              >
+                <Icon name="search" />
+              </button>
+              <button
+                type="button"
+                className="icon-btn surface theme-btn"
                 aria-label={theme === "dark" ? "Switch to day" : "Switch to night"}
                 title={theme === "dark" ? "Switch to day" : "Switch to night"}
                 onClick={toggleTheme}
@@ -2437,6 +2730,25 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
             </div>
           )}
 
+          {searchOpen && (
+            <div className="hud search-hud">
+              <SearchPanel rows={allRows} threads={threads} homes={threadHomes} pages={pages} onJump={jumpToHit} onClose={() => setSearchOpen(false)} />
+            </div>
+          )}
+          {showMap && rows.length > 0 && (
+            <div className="hud minimap-hud">
+              <Minimap
+                rows={rows}
+                camera={camera}
+                onHide={() => toggleMap(false)}
+                onGo={(wx, wy) => {
+                  zoomAnim.current = null;
+                  setFollowId(null);
+                  setCamera({ zoom: cam.current.zoom, x: window.innerWidth / 2 - wx * cam.current.zoom, y: window.innerHeight / 2 - wy * cam.current.zoom });
+                }}
+              />
+            </div>
+          )}
           <div className="hud bottombar">
             <div className="bottom-left">
               <div className="ctrl-group">
@@ -2446,6 +2758,11 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
                 <button type="button" className="icon-btn sm" aria-label="Redo" onClick={redo}>
                   <Icon name="redo" size={18} />
                 </button>
+                {!showMap && (
+                  <button type="button" className="icon-btn sm" aria-label="Show the map" title="Show the map" onClick={() => toggleMap(true)}>
+                    <Icon name="map" size={18} />
+                  </button>
+                )}
                 <div className="ctrl-sep" />
                 <ZoomControl
                   zoom={camera.zoom}
@@ -2539,6 +2856,20 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
             </div>
 
             <div className="bottom-right">
+              {inbox.count > 0 && (
+                <button
+                  type="button"
+                  className={`now-pill inbox-pill${inbox.mention ? " mention" : ""}`}
+                  title="Go to the unread messages"
+                  onClick={jumpToUnread}
+                >
+                  <span className="inbox-count">{inbox.mention ? "@" : inbox.count}</span>
+                  <span className="now-text">
+                    <span className="now-label">{inbox.mention ? "You were mentioned" : `${inbox.count} unread`}</span>
+                    <span className="now-title">{inbox.title}</span>
+                  </span>
+                </button>
+              )}
               <NowPlaying items={nowPlaying} onJump={jumpToElement} />
               <button
                 type="button"

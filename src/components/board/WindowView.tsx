@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Icon, type IconName } from "@/components/icons";
 import { api } from "@/lib/client/api";
 import { measuredHeights } from "@/lib/client/elements";
@@ -57,6 +58,50 @@ function newBlock(kind: WinBlockKind, over: Partial<WinBlock> = {}): WinBlock {
     slot: { title: "", span: 2 },
   }[kind] as Partial<WinBlock>;
   return { ...base, ...extra, ...over } as WinBlock;
+}
+
+/** Where a dragged block would land: in its own window, another window, or the board. */
+type BlockDrop =
+  | { kind: "here"; blockId: string | null; after: boolean }
+  | { kind: "window"; winId: string; blockId: string | null }
+  | { kind: "board"; x: number; y: number };
+
+function blockDropAt(x: number, y: number, ownWin: string, moving: string): BlockDrop | null {
+  for (const node of document.elementsFromPoint(x, y)) {
+    const el = node as HTMLElement;
+    if (el.closest(".block-ghost")) continue;
+    const host = el.closest<HTMLElement>("[data-el]");
+    if (!host) {
+      if (el.closest(".hud, .sel-toolbar")) return null;
+      return el.closest(".board-root") ? { kind: "board", x, y } : null;
+    }
+    const block = el.closest<HTMLElement>("[data-block]");
+    if (host.dataset.el === ownWin) {
+      if (!block || block.dataset.block === moving) return { kind: "here", blockId: null, after: false };
+      const r = block.getBoundingClientRect();
+      return { kind: "here", blockId: block.dataset.block!, after: x > r.left + r.width / 2 };
+    }
+    if (host.dataset.type === "window") return { kind: "window", winId: host.dataset.el!, blockId: block?.dataset.block ?? null };
+    return { kind: "board", x, y };
+  }
+  return null;
+}
+
+function markBlockDrop(t: BlockDrop | null, ownWin: string) {
+  document.querySelectorAll("[data-drop-into]").forEach((n) => n.removeAttribute("data-drop-into"));
+  document.querySelectorAll("[data-drop-here]").forEach((n) => n.removeAttribute("data-drop-here"));
+  document.querySelectorAll("[data-drop-side]").forEach((n) => n.removeAttribute("data-drop-side"));
+  document.querySelector(".board-root")?.classList.toggle("block-to-board", t?.kind === "board");
+  if (!t) return;
+  if (t.kind === "here" && t.blockId) {
+    const n = document.querySelector(`[data-el="${ownWin}"] [data-block="${t.blockId}"]`);
+    n?.setAttribute("data-drop-side", t.after ? "after" : "before");
+  }
+  if (t.kind === "window") {
+    const host = document.querySelector(`[data-el="${t.winId}"]`);
+    host?.setAttribute("data-drop-into", "");
+    if (t.blockId) host?.querySelector(`[data-block="${t.blockId}"]`)?.setAttribute("data-drop-here", "");
+  }
 }
 
 /** Puts blocks after the one they were dropped on, or in place of an empty spot. */
@@ -240,8 +285,8 @@ export function WindowView({ row, editing }: { row: ElementRow; editing: boolean
   const blocks = d.blocks ?? [];
   const [selId, setSelId] = useState<string | null>(null);
   const [closed, setClosed] = useState<ReadonlySet<string>>(new Set());
-  const dragId = useRef<string | null>(null);
-  const [dropOn, setDropOn] = useState<string | null>(null);
+  const [drag, setDrag] = useState<{ id: string; x: number; y: number; label: string } | null>(null);
+  const dragTarget = useRef<BlockDrop | null>(null);
   const root = useRef<HTMLDivElement>(null);
   const selected = editing ? blocks.find((b) => b.id === selId) ?? null : null;
   // Changes start from the newest blocks, even ones made a moment ago and not yet rendered
@@ -298,17 +343,42 @@ export function WindowView({ row, editing }: { row: ElementRow; editing: boolean
     [next[i], next[j]] = [next[j], next[i]];
     setBlocks(next);
   }
-  function dropBefore(targetId: string) {
-    const from = dragId.current;
-    dragId.current = null;
-    setDropOn(null);
-    if (!from || from === targetId) return;
-    const moving = current().find((b) => b.id === from);
-    if (!moving) return;
-    const rest = current().filter((b) => b.id !== from);
-    const at = rest.findIndex((b) => b.id === targetId);
-    rest.splice(at < 0 ? rest.length : at, 0, moving);
-    setBlocks(rest);
+  /** Picks up a block by its handle: works with a mouse, a pen or a finger. */
+  function gripDown(e: React.PointerEvent, b: WinBlock) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setSelId(b.id);
+    dragTarget.current = null;
+    setDrag({ id: b.id, x: e.clientX, y: e.clientY, label: b.title || kindOf(b.kind).label });
+  }
+  function gripMove(e: React.PointerEvent) {
+    if (!drag) return;
+    setDrag({ ...drag, x: e.clientX, y: e.clientY });
+    dragTarget.current = blockDropAt(e.clientX, e.clientY, row.id, drag.id);
+    markBlockDrop(dragTarget.current, row.id);
+  }
+  function gripUp() {
+    const t = dragTarget.current;
+    const moving = drag;
+    setDrag(null);
+    dragTarget.current = null;
+    markBlockDrop(null, row.id);
+    if (!moving || !t) return;
+    if (t.kind === "here") {
+      if (!t.blockId || t.blockId === moving.id) return;
+      const block = current().find((x) => x.id === moving.id);
+      if (!block) return;
+      const rest = current().filter((x) => x.id !== moving.id);
+      const at = rest.findIndex((x) => x.id === t.blockId);
+      rest.splice(at + (t.after ? 1 : 0), 0, block);
+      setBlocks(rest);
+    } else if (t.kind === "window") {
+      ctx.moveBlockTo(row.id, moving.id, t.winId, t.blockId);
+    } else {
+      ctx.moveBlockOut(row.id, moving.id, { x: t.x, y: t.y });
+    }
   }
   function add(kind: WinBlockKind) {
     const b = newBlock(kind);
@@ -509,43 +579,35 @@ export function WindowView({ row, editing }: { row: ElementRow; editing: boolean
                 <section
                   key={b.id}
                   data-block={b.id}
-                  className={`win-blk kind-${b.kind}${selected?.id === b.id ? " sel" : ""}${dropOn === b.id ? " drop" : ""}`}
+                  className={`win-blk kind-${b.kind}${selected?.id === b.id ? " sel" : ""}${drag?.id === b.id ? " lifting" : ""}`}
                   style={{ gridColumn: `span ${spans.get(b.id) ?? 3}` }}
                   aria-label={b.title || k.label}
-                  draggable={editing}
                   onClick={editing ? () => setSelId(b.id) : undefined}
-                  onDragStart={(e) => {
-                    dragId.current = b.id;
-                    e.dataTransfer.effectAllowed = "move";
-                    e.dataTransfer.setData("text/x-drawory-block", b.id);
-                    e.stopPropagation();
-                  }}
-                  onDragOver={(e) => {
-                    if (!dragId.current) return;
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setDropOn(b.id);
-                  }}
-                  onDragLeave={() => setDropOn((cur) => (cur === b.id ? null : cur))}
-                  onDrop={(e) => {
-                    if (!dragId.current) return;
-                    e.preventDefault();
-                    e.stopPropagation();
-                    dropBefore(b.id);
-                  }}
-                  onDragEnd={() => {
-                    dragId.current = null;
-                    setDropOn(null);
-                  }}
                 >
                   {b.kind === "divider" ? (
-                    editing ? <div className="win-divider-edit">Divider</div> : <hr className="win-hr" />
+                    editing ? (
+                      <div className="win-divider-edit">
+                        <span className="win-grip" onPointerDown={(e) => gripDown(e, b)} onPointerMove={gripMove} onPointerUp={gripUp} onPointerCancel={gripUp}>
+                          <Icon name="grip" size={16} />
+                        </span>
+                        Divider
+                      </div>
+                    ) : (
+                      <hr className="win-hr" />
+                    )
                   ) : (
                     <>
                       {(editing || b.title !== "") && (
                       <header className="win-bh">
                         {editing && (
-                          <span className="win-grip" title="Drag to reorder">
+                          <span
+                            className="win-grip"
+                            title="Drag to move: within the window, into another window, or out onto the board"
+                            onPointerDown={(e) => gripDown(e, b)}
+                            onPointerMove={gripMove}
+                            onPointerUp={gripUp}
+                            onPointerCancel={gripUp}
+                          >
                             <Icon name="grip" size={16} />
                           </span>
                         )}
@@ -566,6 +628,7 @@ export function WindowView({ row, editing }: { row: ElementRow; editing: boolean
                         ) : (
                           <span className="win-bt">{b.title || k.label}</span>
                         )}
+                        {b.kind === "chat" && <UnreadBadge thread={b.id} />}
                         {!editing && (
                           <button
                             type="button"
@@ -628,6 +691,15 @@ export function WindowView({ row, editing }: { row: ElementRow; editing: boolean
           )}
         </div>
       )}
+
+      {drag &&
+        createPortal(
+          <div className="block-ghost" style={{ left: drag.x + 14, top: drag.y + 10 }}>
+            <Icon name="grip" size={14} />
+            {drag.label}
+          </div>,
+          document.body,
+        )}
 
       {editing && (
         <div className="win-add">
@@ -844,6 +916,17 @@ function ListBlock({ block, editing, update, edit }: { block: WinBlock; editing:
   );
 }
 
+function UnreadBadge({ thread }: { thread: string }) {
+  const u = useBoard().unread(thread);
+  if (!u.count) return null;
+  return (
+    <span className={`unread-badge${u.mention ? " mention" : ""}`} title={u.mention ? "You were mentioned" : "Unread messages"}>
+      {u.mention ? "@" : ""}
+      {u.count}
+    </span>
+  );
+}
+
 function ChatBlock({ block }: { block: WinBlock }) {
   const ctx = useBoard();
   return (
@@ -853,6 +936,10 @@ function ChatBlock({ block }: { block: WinBlock }) {
         me={ctx.me}
         readOnly={ctx.readOnly}
         onSend={(body) => ctx.sendChat(block.id, body)}
+        onReact={ctx.react}
+        onSeen={(id) => ctx.markSeen(block.id, id)}
+        people={ctx.people}
+        highlight={ctx.highlightMsg}
         inputId={`win-chat-${block.id}`}
         placeholder="Message"
       />

@@ -65,6 +65,9 @@ export const api = {
   sendMessage(boardId: string, body: { user_id: string; name: string; color: string; body: string; thread?: string | null }) {
     return request<{ id: string; created_at: string }>(`${base(boardId)}/messages`, json(body));
   },
+  react(boardId: string, body: { id: string; emoji: string; user_id: string }) {
+    return request<{ ok: true }>(`${base(boardId)}/messages/react`, json(body));
+  },
   history(boardId: string) {
     return request<HistoryEvent[]>(`${base(boardId)}/history`);
   },

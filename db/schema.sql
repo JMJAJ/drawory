@@ -127,3 +127,6 @@ create index if not exists messages_board_idx on messages (board_id, id desc);
 
 -- Chat boxes on the board: each is its own thread (the chat box element's id). No thread = the room chat.
 alter table messages add column if not exists thread uuid;
+
+-- Emoji reactions on chat messages: emoji -> user ids.
+alter table messages add column if not exists reactions jsonb not null default '{}'::jsonb;

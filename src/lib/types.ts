@@ -52,6 +52,10 @@ export interface ElementData {
   likes?: string[];
   subtitle?: string;
   blocks?: WinBlock[];
+  /** Items with the same group id are picked and moved together. */
+  group?: string;
+  /** Locked items can't be moved, resized, erased, edited or deleted until unlocked. */
+  locked?: boolean;
 }
 
 /** One entry in a block: an option, a list item, a card, an expense or a song. */
@@ -182,5 +186,7 @@ export interface ChatRow {
   name: string;
   color: string;
   body: string;
+  /** emoji -> ids of who reacted. */
+  reactions?: Record<string, string[]>;
   created_at: Date;
 }

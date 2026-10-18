@@ -25,6 +25,16 @@ export interface BoardCtx {
   finishText(id: string, text: string): void;
   /** Messages in a chat box on the board (newest first). */
   chatFor(thread: string): readonly ChatRow[];
+  /** Adds or removes my reaction on a message. */
+  react(messageId: string, emoji: string): void;
+  /** The conversation was on screen up to this message. */
+  markSeen(thread: string, newestId: string): void;
+  /** Messages from others I haven't seen in a conversation, and whether one mentions me. */
+  unread(thread: string): Unread;
+  /** People online to @mention. */
+  people: readonly { name: string; color: string }[];
+  /** A message to scroll to and flash ("jump to message"). */
+  highlightMsg: string | null;
   /** Sends a message to a chat box (thread = its id) or the room chat (null). */
   sendChat(thread: string | null, body: string): Promise<{ id: string }>;
   /** Shares what's being typed, so others see it letter by letter. */
@@ -33,7 +43,9 @@ export interface BoardCtx {
   /** Opens an element for editing (a window's Edit button). */
   startEditing(id: string): void;
   /** Takes a block out of a window and puts it on the board beside it. */
-  moveBlockOut(windowId: string, blockId: string): void;
+  moveBlockOut(windowId: string, blockId: string, at?: { x: number; y: number }): void;
+  /** Moves a block from one window into another (next to a block there, or to its end). */
+  moveBlockTo(fromWindow: string, blockId: string, toWindow: string, nearBlock: string | null): void;
   sendYt(elementId: string, cmd: Omit<YtCommand, "sentAt">): void;
   onYt(elementId: string, handler: (cmd: YtCommand) => void): () => void;
   setWatching(elementId: string | null): void;
@@ -42,6 +54,8 @@ export interface BoardCtx {
   openCapsule(elementId: string): void;
   addToCapsule(elementId: string): void;
 }
+
+export type Unread = { count: number; mention: boolean; firstId: string | null };
 
 export const BoardContext = createContext<BoardCtx | null>(null);
 

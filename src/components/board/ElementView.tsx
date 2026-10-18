@@ -766,6 +766,7 @@ function CapsuleView({ row }: { row: ElementRow }) {
 function ChatBoxView({ row, editing }: { row: ElementRow; editing: boolean }) {
   const ctx = useBoard();
   const messages = ctx.chatFor(row.id);
+  const unread = ctx.unread(row.id);
   return (
     <div className="card chatbox">
       <div className="chatbox-head">
@@ -787,13 +788,24 @@ function ChatBoxView({ row, editing }: { row: ElementRow; editing: boolean }) {
         ) : (
           <strong className="chatbox-title">{row.data.title || "Chat"}</strong>
         )}
-        <span className="chatbox-count muted">{messages.length || ""}</span>
+        {unread.count > 0 ? (
+          <span className={`unread-badge${unread.mention ? " mention" : ""}`} title={unread.mention ? "You were mentioned" : "Unread messages"}>
+            {unread.mention ? "@" : ""}
+            {unread.count}
+          </span>
+        ) : (
+          <span className="chatbox-count muted">{messages.length || ""}</span>
+        )}
       </div>
       <ChatThread
         messages={messages}
         me={ctx.me}
         readOnly={ctx.readOnly}
         onSend={(body) => ctx.sendChat(row.id, body)}
+        onReact={ctx.react}
+        onSeen={(id) => ctx.markSeen(row.id, id)}
+        people={ctx.people}
+        highlight={ctx.highlightMsg}
         inputId={`chatbox-${row.id}`}
         placeholder="Message"
       />
@@ -982,7 +994,12 @@ export const ElementView = memo(function ElementView({ row, selected, solo, edit
           {remote.name} is typing
         </div>
       )}
-      {selected && solo && resizable && <div className="resize-handle" data-handle="resize" style={{ pointerEvents: "auto" }} />}
+      {selected && solo && resizable && !row.data.locked && <div className="resize-handle" data-handle="resize" style={{ pointerEvents: "auto" }} />}
+      {selected && row.data.locked && (
+        <div className="lock-chip" title="Locked">
+          <Icon name="lock" size={12} />
+        </div>
+      )}
       {likes > 0 && (
         <div className="like-chip">
           <Icon name="heart" size={12} filled />
