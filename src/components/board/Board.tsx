@@ -14,6 +14,8 @@ import {
   normalizePoints,
   RESIZABLE,
   snapBox,
+  attachArrows,
+  ATTACHABLE,
   STROKE_COLORS,
   STROKE_SIZES,
   STYLABLE,
@@ -55,6 +57,10 @@ import {
 import { ElementView, StrokeSvg, type RemoteMark } from "./ElementView";
 import { SearchPanel, type SearchHit } from "./SearchPanel";
 import { Minimap } from "./Minimap";
+import { recognize, sampleSegments, snapAngle, type Recognized } from "@/lib/client/shapes";
+import { densify, eraseFromStroke, inPolygon } from "@/lib/client/erase";
+import { mirrorTransforms, transformData, type MirrorMode } from "@/lib/client/mirror";
+import { LaserLayer } from "./LaserLayer";
 import { deleteTemplate, saveTemplate, useTemplates } from "@/lib/client/templates";
 import { PhotoEditor } from "./PhotoEditor";
 import { blockFromElement, elementFromBlock, insertBlocks } from "./WindowView";
@@ -68,7 +74,7 @@ import { useRoomSocket } from "./socket";
 import type { Sticker } from "@/lib/stickers";
 
 type Tool =
-  | "hand" | "select" | "pen" | "eraser" | "rect" | "ellipse" | "arrow" | "text"
+  | "hand" | "select" | "lasso" | "pen" | "eraser" | "laser" | "rect" | "ellipse" | "arrow" | "text"
   | "note" | "sticky" | "sticker" | "chatbox" | "window" | "media" | "youtube" | "voice" | "capsule";
 
 /** edit: a small change the server applies to its newest copy (votes, ticks), not a whole-card save. */
@@ -78,21 +84,28 @@ type Gesture =
   // hold: on touch, keeping a finger still on empty canvas turns the pan into a selection box.
   | { kind: "pan"; sx: number; sy: number; cam: Camera; hold?: ReturnType<typeof setTimeout> }
   | { kind: "pinch"; d0: number; mx: number; my: number; cam: Camera }
-  | { kind: "draw"; points: number[][] }
+  // hold: the timer that straightens the stroke when the pen rests; snapped: the clean shape it became.
+  | { kind: "draw"; points: number[][]; hold?: ReturnType<typeof setTimeout>; snapped?: Recognized | null; straight?: boolean }
   | { kind: "shape"; type: "rect" | "ellipse" | "arrow"; ox: number; oy: number }
   | { kind: "move"; wx: number; wy: number; originals: ElementRow[]; moved: boolean; canDrop: boolean; into?: DropInto | null }
   | { kind: "resize"; wx: number; wy: number; original: ElementRow }
   | { kind: "erase"; originals: Map<string, ElementRow> }
+  | { kind: "laser"; pts: number[][] }
+  | { kind: "rotate"; original: ElementRow; cx: number; cy: number }
+  | { kind: "lasso"; pts: number[][] }
+  | { kind: "erasePart"; path: number[][]; touched: Map<string, ElementRow>; temp: Map<string, string[]> }
   | { kind: "marquee"; wx: number; wy: number; base: string[] };
 
 const TOOL_GROUPS: { id: Tool; label: string; icon: IconName; key?: string }[][] = [
   [
     { id: "hand", label: "Pan", icon: "hand", key: "h" },
     { id: "select", label: "Select", icon: "select", key: "v" },
+    { id: "lasso", label: "Lasso select", icon: "lasso", key: "l" },
   ],
   [
     { id: "pen", label: "Draw", icon: "pen", key: "p" },
     { id: "eraser", label: "Eraser", icon: "eraser", key: "e" },
+    { id: "laser", label: "Laser pointer", icon: "laser", key: "k" },
     { id: "rect", label: "Rectangle", icon: "rect", key: "r" },
     { id: "ellipse", label: "Ellipse", icon: "ellipse", key: "o" },
     { id: "arrow", label: "Arrow", icon: "arrow", key: "a" },
@@ -113,6 +126,8 @@ const TOOL_GROUPS: { id: Tool; label: string; icon: IconName; key?: string }[][]
 /** A window (and the block in it) that dragged items will drop into. */
 type DropInto = { winId: string; blockId: string | null };
 
+type ShapeFill = "none" | "soft" | "solid";
+
 type AlignKind = "left" | "center" | "right" | "top" | "middle" | "bottom" | "across" | "down";
 const ALIGN_ACTIONS: { id: AlignKind; label: string; icon: IconName; group: number; spread?: boolean }[] = [
   { id: "left", label: "Align left edges", icon: "alignLeft", group: 0 },
@@ -131,6 +146,10 @@ const SHAPE_WIDTHS = [2, 3.5, 6];
 const ONLINE_MS = 45_000;
 const DOUBLE_TAP_MS = 350;
 const HOLD_TO_SELECT_MS = 450;
+/** Resting the pen this long turns the stroke into a straight line or a clean shape. */
+const HOLD_TO_STRAIGHTEN_MS = 550;
+/** Fading ink lasts this long. */
+const FADE_MS = 12_000;
 const STATUS: Record<SyncStatus, { label: string; title: string }> = {
   live: { label: "Live", title: "Everyone's changes and cursors appear instantly" },
   polling: { label: "Synced", title: "The instant connection isn't available here, so the board syncs every second. Tap to retry." },
@@ -145,7 +164,7 @@ const pageOf = (r: { data: ElementData }) => r.data.page ?? "main";
 const NO_CHAT: readonly ChatRow[] = [];
 const NO_UNREAD: Unread = { count: 0, mention: false, firstId: null };
 /** Types you can open for editing (double-click, double-tap or the pen button). */
-const EDITABLE: ElementType[] = ["text", "note", "image", "chatbox", "sticky", "window"];
+const EDITABLE: ElementType[] = ["text", "note", "image", "chatbox", "sticky", "window", "rect", "ellipse"];
 
 function isEditable(t: EventTarget | null) {
   const el = t as HTMLElement | null;
@@ -228,7 +247,7 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
       if (o.row) map.set(id, o.row);
       else map.delete(id);
     }
-    return [...map.values()].filter((r) => pageOf(r) === page).sort((a, b) => a.z - b.z);
+    return attachArrows([...map.values()].filter((r) => pageOf(r) === page).sort((a, b) => a.z - b.z));
   }, [committed, overlay, page]);
   const rowsById = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
   const rowsRef = useRef(rowsById);
@@ -286,6 +305,36 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
   >(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [stickersOpen, setStickersOpen] = useState(false);
+  const [lasso, setLasso] = useState<number[][] | null>(null);
+  const [eraserMode, setEraserMode] = useState<"whole" | "part">("whole");
+  // How new rectangles, ellipses and arrows look.
+  const [shapeStyle, setShapeStyle] = useState<{ fill: ShapeFill; dashed: boolean; opacity: number }>({ fill: "none", dashed: false, opacity: 1 });
+  // Pen variants: normal, see-through highlighter, or ink that fades after a few seconds.
+  const [hasEyeDropper, setHasEyeDropper] = useState(false);
+  useEffect(() => queueMicrotask(() => setHasEyeDropper("EyeDropper" in window)), []);
+  const [penKind, setPenKind] = useState<"pen" | "highlight" | "fade">("pen");
+  // Mirror pen: copies of every stroke reflected around a centre point.
+  const [mirror, setMirror] = useState<MirrorMode>(0);
+  const [mirrorCenter, setMirrorCenter] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [myLaser, setMyLaser] = useState<number[][]>([]);
+  const [customColors, setCustomColors] = useState<string[]>(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem("drawory:colors") ?? "[]");
+      return Array.isArray(v) ? v.slice(0, 4) : [];
+    } catch {
+      return [];
+    }
+  });
+  function pickCustomColor(c: string) {
+    applyStyle({ color: c });
+    setCustomColors((list) => {
+      const next = [c, ...list.filter((x) => x !== c)].slice(0, 4);
+      try {
+        localStorage.setItem("drawory:colors", JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }
   const [photoEditId, setPhotoEditId] = useState<string | null>(null);
   // Lines shown while a dragged item snaps to others.
   const [guides, setGuides] = useState<SnapGuide[]>([]);
@@ -688,6 +737,21 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
       clearTimeout(timer);
     };
   }, [spotifyLinked, shareSpotify, viewOnly, showToast]);
+
+  /* ---------- Fading ink ---------- */
+  // Anyone online removes ink that has faded (deleting twice is harmless).
+  const fadedSent = useRef(new Set<string>());
+  useEffect(() => {
+    if (viewOnly) return;
+    const t = setInterval(() => {
+      const now = serverNow();
+      const gone = [...committedRef.current.values()].filter((r) => r.data.fadeAt && r.data.fadeAt < now && !fadedSent.current.has(r.id));
+      if (!gone.length) return;
+      for (const r of gone) fadedSent.current.add(r.id);
+      void send(gone.map((r) => ({ before: r, after: null })), false);
+    }, 1000);
+    return () => clearInterval(t);
+  }, [send, serverNow, viewOnly]);
 
   /* ---------- Presence ---------- */
   const presenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1370,10 +1434,17 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
   /* ---------- Pointer gestures ---------- */
   const strokeData = useCallback(
     (points: number[][]): ElementData => {
-      const px = STROKE_SIZES.find((s) => s.id === sizeId)?.px ?? 6;
-      return { ...normalizePoints(points, px), size: px, color: colorId };
+      const base = STROKE_SIZES.find((s) => s.id === sizeId)?.px ?? 6;
+      const px = penKind === "highlight" ? base * 3 : base;
+      const data: ElementData = { ...normalizePoints(points, px), size: px, color: colorId };
+      if (penKind === "highlight") data.highlight = true;
+      if (penKind === "fade") {
+        data.fadeFrom = Math.round(serverNow());
+        data.fadeAt = data.fadeFrom + FADE_MS;
+      }
+      return data;
     },
-    [sizeId, colorId],
+    [sizeId, colorId, penKind, serverNow],
   );
 
   const eraseAt = useCallback(
@@ -1410,6 +1481,20 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
     }
   }
 
+  /** Shows (and shares) the clean shape a stroke was turned into. */
+  function showSnapped(r: Recognized) {
+    if (r.kind === "line" || r.kind === "polygon") {
+      const pts = r.kind === "line" ? sampleSegments([r.a, r.b], false) : sampleSegments(r.pts, true);
+      setDraft(mkRow("stroke", strokeData(pts), nextZ(), me.id));
+      shareStroke(pts);
+      return;
+    }
+    const px = STROKE_SIZES.find((s) => s.id === sizeId)?.px ?? 6;
+    const data = { x: r.x, y: r.y, w: Math.max(8, r.w), h: Math.max(8, r.h), color: colorId, size: Math.max(2, px * 0.6) };
+    setDraft(mkRow(r.kind, data, nextZ(), me.id));
+    setActivity({ k: "shape", t: r.kind, d: data });
+  }
+
   /** Shares a stroke in progress. Long ones are thinned so the update stays small. */
   function shareStroke(points: number[][]) {
     const step = Math.ceil(points.length / 400);
@@ -1431,6 +1516,10 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
       if (editingRow?.type === "text") {
         const box = rootRef.current?.querySelector<HTMLElement>(`[data-el="${editingId}"] .text-body`);
         finishText(editingId, box?.innerText ?? "");
+      } else if (editingRow?.type === "rect" || editingRow?.type === "ellipse") {
+        const box = rootRef.current?.querySelector<HTMLElement>(`[data-el="${editingId}"] .shape-text-edit`);
+        const text = box?.innerText.trim() ?? "";
+        if (box && text !== (editingRow.data.text ?? "")) patch(editingId, { text });
       } else if (editingRow?.type === "sticky") {
         const area = rootRef.current?.querySelector<HTMLTextAreaElement>(`[data-el="${editingId}"] textarea.sticky-text`);
         if (area && area.value !== (editingRow.data.text ?? "")) patch(editingId, { text: area.value });
@@ -1478,7 +1567,11 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
       case "select": {
         if (target.closest("[data-handle]") && selectedId) {
           const original = rowsRef.current.get(selectedId);
-          if (original && !original.data.locked) gesture.current = { kind: "resize", wx: w.x, wy: w.y, original };
+          if (!original || original.data.locked) return;
+          if (target.closest("[data-handle]")?.getAttribute("data-handle") === "rotate") {
+            const b = bounds(original);
+            gesture.current = { kind: "rotate", original, cx: b.x + b.w / 2, cy: b.y + b.h / 2 };
+          } else gesture.current = { kind: "resize", wx: w.x, wy: w.y, original };
           return;
         }
         if (elId) {
@@ -1512,8 +1605,15 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
             const area = bounds(r);
             for (const other of rowsRef.current.values()) if (other.type !== "place" && contains(area, bounds(other))) ids.add(other.id);
           }
-          // Locked items stay where they are.
-          const originals = [...ids].map((id) => rowsRef.current.get(id)).filter((r): r is ElementRow => !!r && !r.data.locked);
+          // Locked items stay where they are. An arrow dragged away from what it's attached to lets go.
+          const originals = [...ids]
+            .map((id) => rowsRef.current.get(id))
+            .filter((r): r is ElementRow => !!r && !r.data.locked)
+            .map((r) =>
+              r.type === "arrow" && ((r.data.from && !ids.has(r.data.from)) || (r.data.to && !ids.has(r.data.to)))
+                ? { ...r, data: { ...r.data, from: undefined, to: undefined } }
+                : r,
+            );
           if (!originals.length) return;
           gesture.current = {
             kind: "move",
@@ -1546,12 +1646,29 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
       }
       case "pen": {
         const pressure = e.pointerType === "pen" ? e.pressure || 0.5 : 0.5;
-        gesture.current = { kind: "draw", points: [[w.x, w.y, pressure]] };
+        // Shift: a straight line from the start, in 15° steps.
+        gesture.current = { kind: "draw", points: [[w.x, w.y, pressure]], straight: e.shiftKey };
         setDraft(mkRow("stroke", strokeData([[w.x, w.y, pressure]]), nextZ(), me.id));
         shareStroke([[w.x, w.y]]);
         return;
       }
+      case "lasso": {
+        gesture.current = { kind: "lasso", pts: [[w.x, w.y]] };
+        setLasso([[w.x, w.y]]);
+        return;
+      }
+      case "laser": {
+        gesture.current = { kind: "laser", pts: [[w.x, w.y]] };
+        setMyLaser([[w.x, w.y]]);
+        return;
+      }
       case "eraser": {
+        if (eraserMode === "part") {
+          const g: Gesture = { kind: "erasePart", path: [[w.x, w.y]], touched: new Map(), temp: new Map() };
+          gesture.current = g;
+          erasePartAt(g);
+          return;
+        }
         const g: Gesture = { kind: "erase", originals: new Map() };
         gesture.current = g;
         eraseAt(e.clientX, e.clientY, g);
@@ -1623,12 +1740,39 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
         setCamera({ zoom: z, x: mx - wx * z, y: my - wy * z });
         break;
       }
+      case "laser": {
+        g.pts.push([Math.round(w.x), Math.round(w.y)]);
+        const recent = g.pts.slice(-30);
+        setMyLaser(recent);
+        setActivity({ k: "laser", pts: recent });
+        break;
+      }
       case "draw": {
+        const first = g.points[0];
+        // Straightened: the line's end follows the pen (Shift keeps it to 15° steps).
+        if (g.straight || g.snapped?.kind === "line") {
+          const a: [number, number] = [first[0], first[1]];
+          const b = e.shiftKey || g.straight ? snapAngle(a, [w.x, w.y]) : ([w.x, w.y] as [number, number]);
+          g.snapped = { kind: "line", a, b };
+          showSnapped(g.snapped);
+          break;
+        }
+        if (g.snapped) break; // a clean shape stays as it is until you let go
         const last = g.points[g.points.length - 1];
         if (Math.hypot(w.x - last[0], w.y - last[1]) * cam.current.zoom < 1.5) break;
         g.points.push([w.x, w.y, e.pointerType === "pen" ? e.pressure || 0.5 : 0.5]);
         if (draftRef.current) setDraft({ ...draftRef.current, data: strokeData(g.points) });
         shareStroke(g.points);
+        // Rest the pen for a moment and the stroke becomes a clean line or shape.
+        clearTimeout(g.hold);
+        g.hold = setTimeout(() => {
+          if (gesture.current !== g) return;
+          const r = recognize(g.points);
+          if (!r) return;
+          g.snapped = r;
+          showSnapped(r);
+          navigator.vibrate?.(8);
+        }, HOLD_TO_STRAIGHTEN_MS);
         break;
       }
       case "shape": {
@@ -1647,11 +1791,14 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
           const y = Math.min(g.oy, g.oy + dy) - pad;
           shapeRow = mkRow("arrow", {
             x, y, w: Math.abs(dx) + pad * 2, h: Math.abs(dy) + pad * 2, color: colorId, size: width,
+            dashed: shapeStyle.dashed || undefined, opacity: shapeStyle.opacity < 1 ? shapeStyle.opacity : undefined,
             points: [[g.ox - x, g.oy - y], [g.ox + dx - x, g.oy + dy - y]],
           }, nextZ(), me.id);
         } else {
           shapeRow = mkRow(g.type, {
             x: Math.min(g.ox, g.ox + dx), y: Math.min(g.oy, g.oy + dy), w: Math.abs(dx), h: Math.abs(dy), color: colorId, size: width,
+            fill: shapeStyle.fill === "none" ? undefined : shapeStyle.fill, dashed: shapeStyle.dashed || undefined,
+            opacity: shapeStyle.opacity < 1 ? shapeStyle.opacity : undefined,
           }, nextZ(), me.id);
         }
         setDraft(shapeRow);
@@ -1708,6 +1855,28 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
       case "erase":
         eraseAt(e.clientX, e.clientY, g);
         break;
+      case "erasePart":
+        g.path.push([w.x, w.y]);
+        erasePartAt(g);
+        break;
+      case "rotate": {
+        let deg = (Math.atan2(w.y - g.cy, w.x - g.cx) * 180) / Math.PI + 90;
+        if (e.shiftKey) deg = Math.round(deg / 15) * 15;
+        else {
+          // Settle on straight when close.
+          const near = Math.round(deg / 90) * 90;
+          if (Math.abs(deg - near) < 4) deg = near;
+        }
+        deg = ((Math.round(deg) % 360) + 360) % 360;
+        const data = { angle: deg || undefined };
+        preview([{ id: g.original.id, row: { ...g.original, data: { ...g.original.data, ...data } } }]);
+        setActivity({ k: "resize", id: g.original.id, d: data });
+        break;
+      }
+      case "lasso":
+        g.pts.push([w.x, w.y]);
+        setLasso([...g.pts]);
+        break;
       case "marquee": {
         const box = { x: Math.min(g.wx, w.x), y: Math.min(g.wy, w.y), w: Math.abs(w.x - g.wx), h: Math.abs(w.y - g.wy) };
         if (box.w * cam.current.zoom < 3 && box.h * cam.current.zoom < 3) break;
@@ -1741,13 +1910,32 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
     if (!g) return;
     if (g.kind === "pan" && g.hold) clearTimeout(g.hold);
     switch (g.kind) {
+      case "laser":
+        endActivity(0);
+        break;
       case "draw": {
+        clearTimeout(g.hold);
+        let made: ElementRow | null = null;
+        if (g.snapped) {
+          const d = draftRef.current;
+          if (d) made = { ...d, id: newId(), z: nextZ() };
+        } else {
+          const end = toWorld(e.clientX, e.clientY);
+          const last = g.points[g.points.length - 1];
+          if (Math.hypot(end.x - last[0], end.y - last[1]) > 0.5) g.points.push([end.x, end.y, last[2]]);
+          if (g.points.length === 1) g.points.push([g.points[0][0] + 0.1, g.points[0][1] + 0.1, 0.5]);
+          made = mkRow("stroke", strokeData(g.points), nextZ(), me.id);
+        }
         setDraft(null);
-        const end = toWorld(e.clientX, e.clientY);
-        const last = g.points[g.points.length - 1];
-        if (Math.hypot(end.x - last[0], end.y - last[1]) > 0.5) g.points.push([end.x, end.y, last[2]]);
-        if (g.points.length === 1) g.points.push([g.points[0][0] + 0.1, g.points[0][1] + 0.1, 0.5]);
-        addRow("stroke", strokeData(g.points), false);
+        if (made) {
+          // Mirror pen: the copies are grouped with the stroke, so they move together.
+          const copies = mirror ? mirrorTransforms(mirror, mirrorCenter.x, mirrorCenter.y) : [];
+          const group = copies.length ? newId() : undefined;
+          const all = [made, ...copies.map((t) => ({ ...made!, id: newId(), data: transformData(made!, t) }))].map((r) =>
+            group ? { ...r, data: { ...r.data, group } } : r,
+          );
+          void send(all.map((r) => ({ before: null, after: r })));
+        }
         endActivity();
         break;
       }
@@ -1755,7 +1943,17 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
         const d = draftRef.current;
         setDraft(null);
         const big = d && (d.type === "arrow" ? Math.hypot(d.data.w ?? 0, d.data.h ?? 0) > 50 : (d.data.w ?? 0) > 6 && (d.data.h ?? 0) > 6);
-        if (d && big) void send([{ before: null, after: { ...d, id: newId() } }]);
+        if (d && big) {
+          // An arrow that starts or ends on an item sticks to it.
+          let row = { ...d, id: newId() };
+          if (d.type === "arrow") {
+            const [[x1, y1], [x2, y2]] = d.data.points ?? [[0, 0], [0, 0]];
+            const from = itemAt(d.data.x + x1, d.data.y + y1);
+            const to = itemAt(d.data.x + x2, d.data.y + y2);
+            if ((from || to) && from !== to) row = { ...row, data: { ...row.data, from: from ?? undefined, to: to ?? undefined } };
+          }
+          void send([{ before: null, after: row }]);
+        }
         endActivity(big ? 600 : 0);
         break;
       }
@@ -1781,6 +1979,39 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
         if (g.originals.size) void send([...g.originals.values()].map((r) => ({ before: r, after: null })));
         endActivity();
         break;
+      case "erasePart": {
+        // Each touched stroke is replaced by what's left of it.
+        const changes: Change[] = [];
+        for (const [id, orig] of g.touched) {
+          for (const tmp of g.temp.get(id) ?? []) dropPreview(tmp);
+          const pieces = eraseFromStroke(orig, densify(g.path, eraseRadius() / 2), eraseRadius());
+          changes.push({ before: orig, after: null });
+          for (const data of pieces) changes.push({ before: null, after: { ...orig, id: newId(), data } });
+        }
+        if (changes.length) void send(changes);
+        endActivity();
+        break;
+      }
+      case "rotate": {
+        const after = rowsRef.current.get(g.original.id);
+        if (after) void send([{ before: committedRef.current.get(after.id) ?? g.original, after }]);
+        endActivity();
+        break;
+      }
+      case "lasso": {
+        setLasso(null);
+        const poly = g.pts;
+        if (poly.length < 3) break;
+        const hit: string[] = [];
+        for (const r of rowsRef.current.values()) {
+          if (r.data.locked) continue;
+          const b = bounds(r);
+          if (inPolygon(b.x + b.w / 2, b.y + b.h / 2, poly)) hit.push(r.id);
+        }
+        setTool("select");
+        setSelectedIds(withGroups(hit));
+        break;
+      }
       case "marquee":
         setMarquee(null);
         endActivity(0);
@@ -2051,6 +2282,7 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
     const drafts: { key: string; row: ElementRow; color: string }[] = [];
     const boxes: { key: string; b: [number, number, number, number]; color: string }[] = [];
     const selections: { key: string; ids: string[]; color: string; name: string }[] = [];
+    const lasers: { key: string; color: string; pts: number[][] }[] = [];
     const fake = (id: string, type: ElementType, data: ElementData): ElementRow => ({
       id, type, data, z: 1e6, created_by: null, created_at: new Date(0), updated_at: new Date(0),
     });
@@ -2073,6 +2305,9 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
         case "shape":
           drafts.push({ key: p.user_id, color: p.color, row: fake(`live-${p.user_id}`, a.t, a.d) });
           break;
+        case "laser":
+          lasers.push({ key: p.user_id, color: p.color, pts: a.pts ?? [] });
+          break;
         case "move":
           for (const [id, x, y] of a.items) {
             override.set(id, { x, y });
@@ -2093,7 +2328,7 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
           break;
       }
     }
-    return { override, marks, drafts, boxes, selections };
+    return { override, marks, drafts, boxes, selections, lasers };
   }, [onlineHere, rowsById]);
 
   const ACTIVITY_VERB: Record<Activity["k"], string> = {
@@ -2105,6 +2340,7 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
     resize: " · resizing",
     typing: " · typing",
     erase: " · erasing",
+    laser: " · pointing",
   };
 
   /* ---------- Render ---------- */
@@ -2130,10 +2366,23 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
   const activeFont = tool === "select" && selectedTexts[0] ? selectedTexts[0].data.font ?? "clean" : fontId;
   const activeTextSize = tool === "select" && selectedTexts[0] ? selectedTexts[0].data.size ?? 28 : textSize;
   const status = sync.status;
+  const shapeSel = selectedRows.find((r) => r.type === "rect" || r.type === "ellipse" || r.type === "arrow");
+  const showShapeStyle = tool === "rect" || tool === "ellipse" || tool === "arrow" || (tool === "select" && !!shapeSel);
+  const activeShape =
+    tool === "select" && shapeSel
+      ? { fill: (shapeSel.data.fill ?? "none") as ShapeFill, dashed: !!shapeSel.data.dashed, opacity: shapeSel.data.opacity ?? 1 }
+      : shapeStyle;
+  const laserFeeds = useMemo(
+    () => [...(myLaser.length ? [{ key: "me", color: me.color, pts: myLaser }] : []), ...remote.lasers],
+    [myLaser, me.color, remote.lasers],
+  );
   const selBox = selectedRows.length ? unionBounds(selectedRows) : null;
   const iLike = selectedRows.length > 0 && selectedRows.every((r) => r.data.likes?.includes(me.id));
 
-  function applyStyle(next: { color?: string; size?: number; font?: string; fontSize?: number }) {
+  function applyStyle(next: { color?: string; size?: number; font?: string; fontSize?: number; fill?: ShapeFill; dashed?: boolean; opacity?: number }) {
+    if (next.fill) setShapeStyle((s) => ({ ...s, fill: next.fill! }));
+    if (next.dashed !== undefined) setShapeStyle((s) => ({ ...s, dashed: next.dashed! }));
+    if (next.opacity) setShapeStyle((s) => ({ ...s, opacity: next.opacity! }));
     if (next.color) setColorId(next.color);
     if (next.size) setSizeId(next.size);
     if (next.font) setFontId(next.font);
@@ -2145,6 +2394,10 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
       const data: Partial<ElementData> = {};
       if (next.color) data.color = next.color;
       if (next.font && r.type === "text") data.font = next.font;
+      const shape = r.type === "rect" || r.type === "ellipse" || r.type === "arrow";
+      if (next.fill && (r.type === "rect" || r.type === "ellipse")) data.fill = next.fill;
+      if (next.dashed !== undefined && shape) data.dashed = next.dashed;
+      if (next.opacity && (shape || r.type === "stroke" || r.type === "text")) data.opacity = next.opacity;
       if (next.fontSize && r.type === "text") data.size = next.fontSize;
       if (next.size) {
         if (r.type === "text") data.size = TEXT_SIZES[next.size - 1];
@@ -2255,6 +2508,44 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
     } finally {
       setSelectedIds(keep);
     }
+  }
+
+  /** The partial eraser's reach on the board (a fixed size on screen). */
+  function eraseRadius() {
+    return 12 / cam.current.zoom;
+  }
+  /** Partial eraser: shows what's left of each stroke the eraser has touched so far. */
+  function erasePartAt(g: Extract<Gesture, { kind: "erasePart" }>) {
+    const r = eraseRadius();
+    const [x, y] = g.path[g.path.length - 1];
+    for (const row of rowsRef.current.values()) {
+      if (row.type !== "stroke" || row.data.locked || g.touched.has(row.id) || row.id.includes("~")) continue;
+      const b = bounds(row);
+      if (x >= b.x - r && x <= b.x + b.w + r && y >= b.y - r && y <= b.y + b.h + r) g.touched.set(row.id, committedRef.current.get(row.id) ?? row);
+    }
+    const path = densify(g.path, r / 2);
+    const updates: { id: string; row: ElementRow | null }[] = [];
+    for (const [id, orig] of g.touched) {
+      const pieces = eraseFromStroke(orig, path, r);
+      const old = g.temp.get(id) ?? [];
+      const ids = pieces.map((_, i) => `${id}~${i}`);
+      for (const stale of old.filter((t) => !ids.includes(t))) dropPreview(stale);
+      g.temp.set(id, ids);
+      updates.push({ id, row: null });
+      pieces.forEach((data, i) => updates.push({ id: ids[i], row: { ...orig, id: ids[i], data } }));
+    }
+    if (updates.length) preview(updates);
+  }
+
+  /** The top-most item (that arrows can attach to) at a point on the board. */
+  function itemAt(x: number, y: number) {
+    let best: ElementRow | null = null;
+    for (const r of rowsRef.current.values()) {
+      if (!ATTACHABLE(r.type)) continue;
+      const b = bounds(r);
+      if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h && (!best || r.z > best.z)) best = r;
+    }
+    return best?.id ?? null;
   }
 
   /** The ids plus everything grouped with them. */
@@ -2558,6 +2849,33 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
             </div>
           )}
           {draft && draft.type !== "stroke" && <ElementView row={draft} selected={false} editing={false} likes={0} />}
+          {draft &&
+            tool === "pen" &&
+            mirror > 0 &&
+            mirrorTransforms(mirror, mirrorCenter.x, mirrorCenter.y).map((t, i) => {
+              const data = transformData(draft, t);
+              const row = { ...draft, id: `${draft.id}-m${i}`, data };
+              return draft.type === "stroke" ? (
+                <div key={row.id} className="el el-stroke" style={{ left: data.x, top: data.y, width: data.w, height: data.h, zIndex: 999999 }}>
+                  <StrokeSvg row={row} />
+                </div>
+              ) : (
+                <ElementView key={row.id} row={row} selected={false} editing={false} likes={0} />
+              );
+            })}
+          {tool === "pen" && mirror > 0 && (
+            <div className="mirror-guide" style={{ left: mirrorCenter.x, top: mirrorCenter.y, ["--z" as string]: camera.zoom }} data-mode={mirror} aria-hidden="true">
+              <span className="mg-v" />
+              {mirror >= 4 && <span className="mg-h" />}
+              {mirror === 8 && (
+                <>
+                  <span className="mg-d1" />
+                  <span className="mg-d2" />
+                </>
+              )}
+            </div>
+          )}
+          <LaserLayer feeds={laserFeeds} zoom={camera.zoom} />
           {guides.map((gd, i) => (
             <div
               key={i}
@@ -2569,6 +2887,11 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
               }
             />
           ))}
+          {lasso && lasso.length > 1 && (
+            <svg className="lasso-path" aria-hidden="true">
+              <polygon points={lasso.map((p) => p.join(",")).join(" ")} style={{ strokeWidth: 1.5 / camera.zoom, strokeDasharray: `${6 / camera.zoom} ${4 / camera.zoom}` }} />
+            </svg>
+          )}
           {marquee && (
             <div
               className="marquee"
@@ -3171,8 +3494,51 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
                   }}
                 />
               )}
+              {tool === "eraser" && !stickersOpen && (
+                <div className="style-bar" role="radiogroup" aria-label="Eraser">
+                  <button type="button" className="mode-btn" role="radio" aria-checked={eraserMode === "whole"} onClick={() => setEraserMode("whole")}>
+                    Whole lines
+                  </button>
+                  <button type="button" className="mode-btn" role="radio" aria-checked={eraserMode === "part"} onClick={() => setEraserMode("part")}>
+                    Just the bits I rub
+                  </button>
+                </div>
+              )}
               {showStyle && !stickersOpen && (
                 <div className="style-bar" role="group" aria-label="Style">
+                  {tool === "pen" && (
+                    <>
+                      <div className="pen-kinds" role="radiogroup" aria-label="Pen">
+                        {(
+                          [
+                            ["pen", "pen", "Pen"],
+                            ["highlight", "highlighter", "Highlighter"],
+                            ["fade", "fade", "Fading ink (gone after 12 seconds)"],
+                          ] as const
+                        ).map(([k, icon, label]) => (
+                          <button key={k} type="button" className="icon-btn sm" role="radio" aria-checked={penKind === k} aria-label={label} title={label} onClick={() => setPenKind(k)}>
+                            <Icon name={icon} size={17} />
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          className="icon-btn sm mirror-btn"
+                          aria-pressed={mirror > 0}
+                          aria-label={mirror ? `Mirror pen: ${mirror} ways` : "Mirror pen: off"}
+                          title="Mirror pen: off, 2, 4 or 8 ways around the middle of your view"
+                          onClick={() => {
+                            const next = ({ 0: 2, 2: 4, 4: 8, 8: 0 } as const)[mirror];
+                            if (!mirror) setMirrorCenter(centerWorld());
+                            setMirror(next);
+                          }}
+                        >
+                          <Icon name="mirror" size={17} />
+                          {mirror > 0 && <span className="mirror-n">{mirror}</span>}
+                        </button>
+                      </div>
+                      <div className="ctrl-sep" />
+                    </>
+                  )}
                   {STROKE_COLORS.map((c) => (
                     <button
                       key={c.id}
@@ -3184,12 +3550,71 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
                       onClick={() => applyStyle({ color: c.id })}
                     />
                   ))}
+                  {customColors.map((c) => (
+                    <button key={c} type="button" className="swatch" aria-label={`Colour ${c}`} aria-pressed={activeColor === c} style={{ background: c }} onClick={() => applyStyle({ color: c })} />
+                  ))}
+                  <label className="swatch swatch-add" title="Pick any colour">
+                    <Icon name="plus" size={14} />
+                    <input type="color" aria-label="Pick any colour" onChange={(e) => pickCustomColor(e.target.value)} />
+                  </label>
+                  {hasEyeDropper && (
+                    <button
+                      type="button"
+                      className="icon-btn sm"
+                      aria-label="Pick a colour from the screen"
+                      title="Pick a colour from the screen"
+                      onClick={async () => {
+                        try {
+                          const ED = (window as unknown as { EyeDropper: new () => { open(): Promise<{ sRGBHex: string }> } }).EyeDropper;
+                          const r = await new ED().open();
+                          pickCustomColor(r.sRGBHex);
+                        } catch {}
+                      }}
+                    >
+                      <Icon name="pipette" size={16} />
+                    </button>
+                  )}
                   <div className="ctrl-sep" />
                   {STROKE_SIZES.map((s) => (
                     <button key={s.id} type="button" className="width-btn" aria-label={s.label} aria-pressed={sizeId === s.id} onClick={() => applyStyle({ size: s.id })}>
                       <span style={{ height: s.id * 2 }} />
                     </button>
                   ))}
+                  {showShapeStyle && (
+                    <>
+                      <div className="ctrl-sep" />
+                      {(
+                        [
+                          ["none", "No fill"],
+                          ["soft", "Soft fill"],
+                          ["solid", "Solid fill"],
+                        ] as const
+                      ).map(([f, label]) => (
+                        <button key={f} type="button" className={`fill-btn fill-${f}`} aria-label={label} title={label} aria-pressed={activeShape.fill === f} onClick={() => applyStyle({ fill: f })}>
+                          <span />
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        className="fill-btn dash-btn"
+                        aria-label="Dashed line"
+                        title="Dashed line"
+                        aria-pressed={activeShape.dashed}
+                        onClick={() => applyStyle({ dashed: !activeShape.dashed })}
+                      >
+                        <span />
+                      </button>
+                      <button
+                        type="button"
+                        className="fill-btn opacity-btn"
+                        aria-label={`See-through: ${Math.round(activeShape.opacity * 100)}%`}
+                        title="How see-through it is"
+                        onClick={() => applyStyle({ opacity: ({ 1: 0.75, 0.75: 0.5, 0.5: 0.25, 0.25: 1 } as Record<number, number>)[activeShape.opacity] ?? 1 })}
+                      >
+                        {Math.round(activeShape.opacity * 100)}%
+                      </button>
+                    </>
+                  )}
                   {showFonts && (
                     <>
                       <div className="ctrl-sep" />

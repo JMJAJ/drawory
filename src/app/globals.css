@@ -1400,3 +1400,45 @@ textarea.sticky-text { border: 0; outline: none; resize: none; background: trans
 .spotify-help { font-size: 12px; }
 .spotify-help a { color: var(--accent); }
 .field-error { font-size: 12px; color: #e5484d; }
+
+/* ---------- Pens: highlighter, fading ink, mirror, laser, colours ---------- */
+.el-svg.highlight path { fill-opacity: 0.38; }
+@keyframes ink-fade { 0%, 60% { opacity: 1; } 100% { opacity: 0; } }
+.pen-kinds { display: flex; gap: 2px; }
+.pen-kinds .icon-btn[aria-checked="true"] { background: var(--text); color: var(--bg); }
+.mirror-btn { position: relative; }
+.mirror-btn[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+.mirror-n { position: absolute; right: 2px; bottom: 1px; font-size: 9px; font-weight: 800; }
+.swatch-add { display: grid; place-items: center; background: var(--soft) !important; color: var(--muted); position: relative; cursor: pointer; }
+.swatch-add input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.mirror-guide { position: absolute; width: 0; height: 0; pointer-events: none; z-index: 999990; }
+.mirror-guide span { position: absolute; left: 0; top: 0; width: 6000px; height: calc(1px / var(--z)); margin-left: -3000px; background: var(--accent); opacity: 0.25; transform-origin: center; }
+.mirror-guide .mg-v { transform: rotate(90deg); }
+.mirror-guide .mg-d1 { transform: rotate(45deg); }
+.mirror-guide .mg-d2 { transform: rotate(-45deg); }
+.laser-layer { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; z-index: 999996; }
+.tool-laser { cursor: crosshair; }
+
+/* ---------- Shape style and text in shapes ---------- */
+.shape-text { position: absolute; inset: 10%; display: flex; align-items: center; justify-content: center; text-align: center; font-size: 20px; font-weight: 600; line-height: 1.25; overflow: hidden; overflow-wrap: anywhere; pointer-events: auto; }
+.shape-text-edit { min-width: 2ch; outline: none; white-space: pre-wrap; cursor: text; }
+.fill-btn { width: 30px; height: 30px; border: 0; border-radius: 8px; background: transparent; display: grid; place-items: center; color: var(--muted); font-size: 10px; font-weight: 800; }
+.fill-btn:hover { background: var(--soft); }
+.fill-btn[aria-pressed="true"] { background: var(--soft); box-shadow: 0 0 0 1.5px var(--text) inset; color: var(--text); }
+.fill-btn span { width: 16px; height: 16px; border-radius: 4px; border: 2px solid currentColor; }
+.fill-soft span { background: color-mix(in srgb, currentColor 25%, transparent); }
+.fill-solid span { background: currentColor; }
+.dash-btn span { border-style: dashed; }
+.opacity-btn { width: auto; padding: 0 6px; }
+
+/* ---------- Rotate, lasso, eraser modes ---------- */
+.rotate-handle {
+  position: absolute; left: 50%; top: -34px; width: 16px; height: 16px; margin-left: -8px; border-radius: 50%;
+  background: var(--surface); border: 2px solid var(--sel, var(--accent)); cursor: grab; z-index: 3;
+}
+.rotate-handle::after { content: ""; position: absolute; left: 50%; top: 14px; width: 2px; height: 16px; margin-left: -1px; background: var(--sel, var(--accent)); opacity: 0.6; }
+.lasso-path { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; z-index: 999998; }
+.lasso-path polygon { fill: color-mix(in srgb, var(--sel, var(--accent)) 10%, transparent); stroke: var(--sel, var(--accent)); }
+.tool-lasso { cursor: crosshair; }
+.mode-btn { height: 34px; padding: 0 12px; border: 0; border-radius: 10px; background: transparent; color: var(--muted); font: inherit; font-size: 13px; font-weight: 600; }
+.mode-btn[aria-checked="true"] { background: var(--text); color: var(--bg); }

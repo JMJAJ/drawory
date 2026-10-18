@@ -54,6 +54,19 @@ export interface ElementData {
   blocks?: WinBlock[];
   /** Items with the same group id are picked and moved together. */
   group?: string;
+  /** Free rotation in degrees (photos' quarter turns are `rotate`). */
+  angle?: number;
+  /** Shapes: fill (none, a soft tint of the line colour, or solid) and see-through (0.25–1). */
+  fill?: "none" | "soft" | "solid";
+  opacity?: number;
+  /** Arrows: the items each end is attached to; the arrow follows them when they move. */
+  from?: string;
+  to?: string;
+  /** Highlighter strokes: see-through and flat. */
+  highlight?: boolean;
+  /** Fading ink: the stroke fades out and is removed at fadeAt (server time, ms). */
+  fadeFrom?: number;
+  fadeAt?: number;
   /** Photos: the part shown (fractions of the original) and quarter turns. */
   crop?: { x: number; y: number; w: number; h: number };
   rotate?: number;
@@ -159,7 +172,8 @@ export type Activity =
   | { k: "move"; items: [string, number, number][] }
   | { k: "resize"; id: string; d: Partial<ElementData> }
   | { k: "typing"; id: string; text: string; d: ElementData }
-  | { k: "erase"; ids: string[] };
+  | { k: "erase"; ids: string[] }
+  | { k: "laser"; pts: number[][] };
 
 /** A row of the `signals` live query. int8 ids arrive as strings. */
 export interface SignalRow {

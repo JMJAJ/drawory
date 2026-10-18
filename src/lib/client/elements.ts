@@ -74,6 +74,47 @@ export function bounds(el: Pick<ElementRow, "type" | "data">) {
 }
 
 type Box = { x: number; y: number; w: number; h: number };
+
+/** Types an arrow can attach to (not strokes, other arrows or areas). */
+export const ATTACHABLE = (t: ElementType) => t !== "stroke" && t !== "arrow" && t !== "place";
+
+/** Where a line from a box's centre towards a point leaves the box (plus a small gap). */
+function edgePoint(b: Box, toward: [number, number], gap: number): [number, number] {
+  const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+  const dx = toward[0] - cx, dy = toward[1] - cy;
+  if (!dx && !dy) return [cx, cy];
+  const sx = dx ? (b.w / 2 + gap) / Math.abs(dx) : Infinity;
+  const sy = dy ? (b.h / 2 + gap) / Math.abs(dy) : Infinity;
+  const s = Math.min(sx, sy, 1);
+  return [cx + dx * s, cy + dy * s];
+}
+
+/** Arrows attached to items get their ends from where those items are now. */
+export function attachArrows(rows: ElementRow[]): ElementRow[] {
+  if (!rows.some((r) => r.type === "arrow" && (r.data.from || r.data.to))) return rows;
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return rows.map((r) => {
+    const d = r.data;
+    if (r.type !== "arrow" || (!d.from && !d.to)) return r;
+    const [[px1, py1], [px2, py2]] = d.points ?? [[0, 0], [d.w ?? 0, d.h ?? 0]];
+    let a: [number, number] = [d.x + px1, d.y + py1];
+    let b: [number, number] = [d.x + px2, d.y + py2];
+    const fromRow = d.from ? byId.get(d.from) : undefined;
+    const toRow = d.to ? byId.get(d.to) : undefined;
+    const fb = fromRow ? bounds(fromRow) : null;
+    const tb = toRow ? bounds(toRow) : null;
+    const ca: [number, number] = fb ? [fb.x + fb.w / 2, fb.y + fb.h / 2] : a;
+    const cb: [number, number] = tb ? [tb.x + tb.w / 2, tb.y + tb.h / 2] : b;
+    if (fb) a = edgePoint(fb, cb, 8);
+    if (tb) b = edgePoint(tb, ca, 10);
+    const pad = 20;
+    const x = Math.min(a[0], b[0]) - pad, y = Math.min(a[1], b[1]) - pad;
+    return {
+      ...r,
+      data: { ...d, x, y, w: Math.abs(b[0] - a[0]) + pad * 2, h: Math.abs(b[1] - a[1]) + pad * 2, points: [[a[0] - x, a[1] - y], [b[0] - x, b[1] - y]] },
+    };
+  });
+}
 export type SnapGuide = { axis: "x" | "y"; at: number; from: number; to: number };
 
 /** Gap left between items docked side by side. */

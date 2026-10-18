@@ -33,16 +33,23 @@ export function StrokeSvg({ row }: { row: ElementRow }) {
       svgPathFromStroke(
         getStroke(d.points ?? [], {
           size: d.size ?? 6,
-          thinning: 0.55,
+          // Highlighters are flat, like a marker.
+          thinning: d.highlight ? 0 : 0.55,
           smoothing: 0.5,
           streamline: 0.45,
-          simulatePressure: !(d.points ?? []).some((p) => p[2] !== 0.5),
+          simulatePressure: !d.highlight && !(d.points ?? []).some((p) => p[2] !== 0.5),
         }),
       ),
-    [d.points, d.size],
+    [d.points, d.size, d.highlight],
   );
+  // Fading ink: fade over its lifetime, picking up where it is now.
+  const [elapsed] = useState(() => (d.fadeFrom ? Math.max(0, Date.now() - d.fadeFrom) : 0));
+  const fade =
+    d.fadeAt && d.fadeFrom
+      ? { animation: `ink-fade ${d.fadeAt - d.fadeFrom}ms linear forwards`, animationDelay: `-${elapsed}ms` }
+      : undefined;
   return (
-    <svg className="el-svg" width={d.w} height={d.h}>
+    <svg className={`el-svg${d.highlight ? " highlight" : ""}`} width={d.w} height={d.h} style={fade}>
       <path className="hit" d={path} fill={colorValue(d.color)} />
     </svg>
   );
@@ -71,8 +78,12 @@ function ShapeSvg({ row }: { row: ElementRow }) {
     );
   }
   const inset = sw / 2;
-  const common = { stroke, strokeWidth: sw, fill: "none", strokeDasharray: dash };
-  const hit = { className: "hit-stroke", stroke: "transparent", strokeWidth: sw + 14, fill: "none" };
+  const filled = d.fill === "soft" || d.fill === "solid";
+  const common = { stroke, strokeWidth: sw, fill: filled ? stroke : "none", fillOpacity: d.fill === "soft" ? 0.18 : 1, strokeDasharray: dash };
+  // Filled shapes can be picked up anywhere inside; empty ones by their outline.
+  const hit = filled
+    ? { className: "hit", stroke: "transparent", strokeWidth: sw + 14, fill: "transparent" }
+    : { className: "hit-stroke", stroke: "transparent", strokeWidth: sw + 14, fill: "none" };
   return (
     <svg className="el-svg" width={w} height={h}>
       {row.type === "rect" ? (
@@ -87,6 +98,57 @@ function ShapeSvg({ row }: { row: ElementRow }) {
         </>
       )}
     </svg>
+  );
+}
+
+/** A rectangle or ellipse, with optional words in the middle. */
+function ShapeView({ row, editing }: { row: ElementRow; editing: boolean }) {
+  const ctx = useBoard();
+  const ref = useRef<HTMLDivElement>(null);
+  const d = row.data;
+  const solid = d.fill === "solid";
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || !editing) return;
+    el.innerText = d.text ?? "";
+    el.focus();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    // Only when editing starts; typing shouldn't reset the box.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing]);
+  return (
+    <>
+      <ShapeSvg row={row} />
+      {(editing || d.text) && (
+        <div className={`shape-text${solid ? " on-solid" : ""}`} style={{ color: solid ? "var(--bg)" : colorValue(d.color) }}>
+          {editing ? (
+            <div
+              ref={ref}
+              className="shape-text-edit"
+              contentEditable
+              suppressContentEditableWarning
+              data-interactive
+              role="textbox"
+              aria-label="Text in the shape"
+              onBlur={(e) => {
+                const text = e.currentTarget.innerText.trim();
+                if (text !== (d.text ?? "")) ctx.patch(row.id, { text });
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") ctx.stopEditing();
+                e.stopPropagation();
+              }}
+            />
+          ) : (
+            <span>{d.text}</span>
+          )}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -935,6 +997,8 @@ export const ElementView = memo(function ElementView({ row, selected, solo, edit
       break;
     case "rect":
     case "ellipse":
+      content = <ShapeView row={row} editing={editing} />;
+      break;
     case "arrow":
       content = <ShapeSvg row={row} />;
       break;
@@ -997,6 +1061,8 @@ export const ElementView = memo(function ElementView({ row, selected, solo, edit
         height: autoHeight ? undefined : b.h,
         zIndex: row.type === "place" ? 0 : Math.round(row.z) + 1,
         whiteSpace: autoWidth ? "pre" : undefined,
+        opacity: row.data.opacity && row.data.opacity < 1 ? row.data.opacity : undefined,
+        transform: row.data.angle ? `rotate(${row.data.angle}deg)` : undefined,
         pointerEvents: row.type === "place" ? "none" : undefined,
       }}
     >
@@ -1007,6 +1073,9 @@ export const ElementView = memo(function ElementView({ row, selected, solo, edit
         </div>
       )}
       {selected && solo && resizable && !row.data.locked && <div className="resize-handle" data-handle="resize" style={{ pointerEvents: "auto" }} />}
+      {selected && solo && !row.data.locked && row.type !== "place" && row.type !== "window" && (
+        <div className="rotate-handle" data-handle="rotate" title="Drag to turn (Shift: 15° steps)" style={{ pointerEvents: "auto" }} />
+      )}
       {selected && row.data.locked && (
         <div className="lock-chip" title="Locked">
           <Icon name="lock" size={12} />
