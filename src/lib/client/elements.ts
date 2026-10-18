@@ -44,6 +44,7 @@ export const RESIZABLE: Partial<Record<ElementType, "free" | "aspect" | "width" 
   text: "font",
   capsule: "width",
   audio: "width",
+  chatbox: "free",
 };
 
 /** Types the style bar can recolor. */

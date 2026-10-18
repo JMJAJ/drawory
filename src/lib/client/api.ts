@@ -62,7 +62,7 @@ export const api = {
   signal(boardId: string, kind: "wave" | "yt", from: string, payload: Record<string, unknown> = {}) {
     return request<void>(`${base(boardId)}/signals`, json({ kind, from, payload }));
   },
-  sendMessage(boardId: string, body: { user_id: string; name: string; color: string; body: string }) {
+  sendMessage(boardId: string, body: { user_id: string; name: string; color: string; body: string; thread?: string | null }) {
     return request<{ id: string; created_at: string }>(`${base(boardId)}/messages`, json(body));
   },
   history(boardId: string) {

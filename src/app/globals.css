@@ -926,3 +926,18 @@ button.tag:hover { background: color-mix(in srgb, var(--tag) 26%, transparent); 
 @media (max-width: 720px) {
   .chat { left: 8px; right: 8px; width: auto; top: auto; bottom: 8px; height: min(70dvh, 520px); }
 }
+
+/* ---------- Chat boxes on the board ---------- */
+.chatbox { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+.chatbox-head {
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border);
+  color: var(--muted); cursor: grab;
+}
+.chatbox-title { color: var(--text); font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+.chatbox-head .inline { flex: 1; min-width: 0; border: 0; border-bottom: 1px dashed var(--border-strong); background: transparent; outline: none; font-weight: 700; font-size: 15px; }
+.chatbox-count { font-family: var(--mono); font-size: 11px; }
+.chatbox .chat-list { flex: 1; min-height: 0; padding: 8px 12px; }
+.chatbox .chat-form { padding: 8px; }
+.chatbox .chat-msg { max-width: 90%; }
+
+.board-root:not(.replay) .chatbox [data-interactive] { pointer-events: auto; }

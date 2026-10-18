@@ -2,7 +2,7 @@
 
 import { createContext, useContext } from "react";
 import type { Me } from "@/lib/client/identity";
-import type { ElementData } from "@/lib/types";
+import type { ChatRow, ElementData } from "@/lib/types";
 
 /** play/pause: someone pressed it. tick: the person in charge says where playback is (every few seconds). */
 export type YtCommand = { action: "play" | "pause" | "tick"; time: number; sentAt: number };
@@ -19,6 +19,10 @@ export interface BoardCtx {
   /** Change an element. commit=false only updates this screen (used while typing or dragging). */
   patch(id: string, data: Partial<ElementData>, commit?: boolean): void;
   finishText(id: string, text: string): void;
+  /** Messages in a chat box on the board (newest first). */
+  chatFor(thread: string): readonly ChatRow[];
+  /** Sends a message to a chat box (thread = its id) or the room chat (null). */
+  sendChat(thread: string | null, body: string): Promise<{ id: string }>;
   /** Shares what's being typed, so others see it letter by letter. */
   reportTyping(id: string, text: string): void;
   stopEditing(): void;

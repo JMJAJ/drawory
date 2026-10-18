@@ -15,7 +15,8 @@ export type ElementType =
   | "link"
   | "capsule"
   | "place"
-  | "sticker";
+  | "sticker"
+  | "chatbox";
 
 export interface ElementData {
   x: number;
@@ -133,6 +134,8 @@ export type LiveQueryName = "elements" | "presence" | "signals" | "chat";
 /** A row of the `chat` live query. int8 ids arrive as strings. */
 export interface ChatRow {
   id: string;
+  /** The chat box it belongs to; null for the room chat. */
+  thread: string | null;
   user_id: string;
   name: string;
   color: string;

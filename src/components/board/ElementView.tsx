@@ -7,6 +7,7 @@ import { bounds, colorValue, fontValue, RESIZABLE } from "@/lib/client/elements"
 import { textOn } from "@/lib/client/identity";
 import { stickerSrc } from "@/lib/stickers";
 import type { ElementRow } from "@/lib/types";
+import { ChatThread } from "./ChatThread";
 import { useBoard } from "./context";
 import { loadYouTube, type YTPlayer } from "./youtube";
 
@@ -655,6 +656,44 @@ function CapsuleView({ row }: { row: ElementRow }) {
   );
 }
 
+function ChatBoxView({ row, editing }: { row: ElementRow; editing: boolean }) {
+  const ctx = useBoard();
+  const messages = ctx.chatFor(row.id);
+  return (
+    <div className="card chatbox">
+      <div className="chatbox-head">
+        <Icon name="chat" size={16} />
+        {editing ? (
+          <input
+            className="inline title"
+            aria-label="Chat box name"
+            defaultValue={row.data.title}
+            autoFocus
+            data-interactive
+            maxLength={60}
+            onBlur={(e) => ctx.patch(row.id, { title: e.target.value.trim() || "Chat" })}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === "Escape") e.currentTarget.blur();
+              e.stopPropagation();
+            }}
+          />
+        ) : (
+          <strong className="chatbox-title">{row.data.title || "Chat"}</strong>
+        )}
+        <span className="chatbox-count muted">{messages.length || ""}</span>
+      </div>
+      <ChatThread
+        messages={messages}
+        me={ctx.me}
+        readOnly={ctx.readOnly}
+        onSend={(body) => ctx.sendChat(row.id, body)}
+        inputId={`chatbox-${row.id}`}
+        placeholder="Message"
+      />
+    </div>
+  );
+}
+
 function PlaceView({ row }: { row: ElementRow }) {
   return (
     <>
@@ -729,6 +768,9 @@ export const ElementView = memo(function ElementView({ row, selected, solo, edit
       break;
     case "place":
       content = <PlaceView row={row} />;
+      break;
+    case "chatbox":
+      content = <ChatBoxView row={row} editing={editing} />;
       break;
     case "sticker":
       // eslint-disable-next-line @next/next/no-img-element

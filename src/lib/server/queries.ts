@@ -8,7 +8,7 @@ export const BOARD_QUERIES: Record<LiveQueryName, string> = {
   presence: `SELECT user_id, name, color, cursor_x, cursor_y, view_x, view_y, view_w, view_h, zoom, tool, watching::text AS watching, page, activity, updated_at
      FROM presence WHERE board_id = $1`,
   signals: `SELECT id, kind, from_user, payload, created_at FROM signals WHERE board_id = $1 ORDER BY id DESC LIMIT 30`,
-  chat: `SELECT id, user_id, name, color, body, created_at FROM messages WHERE board_id = $1 ORDER BY id DESC LIMIT 150`,
+  chat: `SELECT id, thread::text AS thread, user_id, name, color, body, created_at FROM messages WHERE board_id = $1 ORDER BY id DESC LIMIT 600`,
 };
 
 /** Cheap fingerprint of a board's elements, so polling can skip unchanged boards. */

@@ -23,7 +23,7 @@ import {
 import { displayCode, inviteLink, rememberRoom } from "@/lib/client/rooms";
 import { initials, textOn, type Me } from "@/lib/client/identity";
 import { audioPeaks, detectLink, fitWithin, imageSize, shrinkPhoto, videoSize, type DetectedLink } from "@/lib/client/media";
-import type { Activity, BoardMeta, BoardPage, ElementData, ElementRow, ElementType, PresenceRow } from "@/lib/types";
+import type { Activity, BoardMeta, BoardPage, ChatRow, ElementData, ElementRow, ElementType, PresenceRow } from "@/lib/types";
 import { PagesBar } from "./PagesBar";
 import { ChatPanel } from "./ChatPanel";
 import { BoardContext, type BoardCtx, type YtCommand } from "./context";
@@ -48,7 +48,7 @@ import type { Sticker } from "@/lib/stickers";
 
 type Tool =
   | "hand" | "select" | "pen" | "eraser" | "rect" | "ellipse" | "arrow" | "text"
-  | "note" | "sticker" | "media" | "youtube" | "voice" | "capsule";
+  | "note" | "sticker" | "chatbox" | "media" | "youtube" | "voice" | "capsule";
 
 type Change = { before: ElementRow | null; after: ElementRow | null };
 
@@ -79,6 +79,7 @@ const TOOL_GROUPS: { id: Tool; label: string; icon: IconName; key?: string }[][]
   [
     { id: "note", label: "Checklist", icon: "note", key: "n" },
     { id: "sticker", label: "Stickers", icon: "sticker", key: "s" },
+    { id: "chatbox", label: "Chat box", icon: "chat", key: "c" },
     { id: "media", label: "Photo, video or link", icon: "image" },
     { id: "youtube", label: "Watch together", icon: "youtube" },
     { id: "voice", label: "Voice note", icon: "mic" },
@@ -101,6 +102,9 @@ const STATUS: Record<SyncStatus, { label: string; title: string }> = {
 
 const DEFAULT_PAGES: BoardPage[] = [{ id: "main", name: "Page 1" }];
 const pageOf = (r: { data: ElementData }) => r.data.page ?? "main";
+const NO_CHAT: readonly ChatRow[] = [];
+/** Types you can open for editing (double-click, double-tap or the pen button). */
+const EDITABLE: ElementType[] = ["text", "note", "image", "chatbox"];
 
 function isEditable(t: EventTarget | null) {
   const el = t as HTMLElement | null;
@@ -778,7 +782,19 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       return 0;
     }
   });
-  const chat = sync.chat;
+  // The room chat is messages without a thread; each chat box on the board has its own.
+  const allChat = sync.chat;
+  const chat = useMemo(() => allChat?.filter((m) => !m.thread), [allChat]);
+  const threads = useMemo(() => {
+    const map = new Map<string, ChatRow[]>();
+    for (const m of allChat ?? []) {
+      if (!m.thread) continue;
+      const list = map.get(m.thread);
+      if (list) list.push(m);
+      else map.set(m.thread, [m]);
+    }
+    return map;
+  }, [allChat]);
   const newestChatId = chat?.length ? Number(chat[0].id) : 0;
   const unread = chatOpen || !chat ? 0 : chat.filter((m) => m.user_id !== me.id && Number(m.id) > chatSeen).length;
   // Opening the chat (or reading it while open) marks everything as seen.
@@ -801,10 +817,11 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     const m = fresh[0];
     if (m) showToast(`${m.name}: ${m.body.length > 70 ? `${m.body.slice(0, 70)}…` : m.body}`, false, { label: "Reply", run: () => setChatOpen(true) });
   }, [chat, newestChatId, chatOpen, me.id, showToast]);
-  const sendChat = useCallback(
-    (body: string) => api.sendMessage(boardId, { user_id: me.id, name: me.name, color: me.color, body }),
+  const sendTo = useCallback(
+    (thread: string | null, body: string) => api.sendMessage(boardId, { user_id: me.id, name: me.name, color: me.color, body, thread }),
     [boardId, me],
   );
+  const sendChat = useCallback((body: string) => sendTo(null, body), [sendTo]);
 
   /* ---------- Signals: hearts, synced video ---------- */
   const spawnHearts = useCallback((x: number, y: number) => {
@@ -1042,6 +1059,13 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
 
   function chooseTool(t: Tool) {
     if (t === "sticker") return setStickersOpen((o) => !o);
+    if (t === "chatbox") {
+      const row = addRow("chatbox", { ...placeNear(320, 400), w: 320, h: 400, title: "Chat" });
+      setTool("select");
+      // Ready to type straight away.
+      setTimeout(() => document.getElementById(`chatbox-${row.id}`)?.focus(), 250);
+      return;
+    }
     if (t === "media") return setDialog({ kind: "media" });
     if (t === "youtube") return setDialog({ kind: "media", url: "" });
     if (t === "voice") return setDialog({ kind: "voice" });
@@ -1103,6 +1127,8 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
     const target = e.target as HTMLElement;
     if (tool === "select" && !laneOpen && target.closest("[data-interactive]")) return;
+    // Chat boxes take typing and scrolling with any tool.
+    if (!laneOpen && target.closest(".chatbox [data-interactive]")) return;
     // Clicks inside the thing being edited go to it (placing the caret, selecting text).
     if (editingId && target.closest(`[data-el="${editingId}"]`)) return;
     if (editingId) {
@@ -1166,7 +1192,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
             const last = lastTap.current;
             const again = last?.id === elId && e.timeStamp - last.t < DOUBLE_TAP_MS && Math.hypot(e.clientX - last.x, e.clientY - last.y) < 30;
             lastTap.current = again ? null : { id: elId, t: e.timeStamp, x: e.clientX, y: e.clientY };
-            if (again && ["text", "note", "image"].includes(row.type)) {
+            if (again && EDITABLE.includes(row.type)) {
               primeKeyboard(e.pointerType);
               setSelectedId(elId);
               setEditingId(elId);
@@ -1428,7 +1454,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     if (tool !== "select") return;
     const id = (e.target as HTMLElement).closest("[data-el]")?.getAttribute("data-el");
     const row = id ? rowsRef.current.get(id) : null;
-    if (row && ["text", "note", "image"].includes(row.type)) setEditingId(row.id);
+    if (row && EDITABLE.includes(row.type)) setEditingId(row.id);
   }
 
   // Wheel: pinch-zoom on trackpads (ctrl) and ctrl/cmd+wheel zoom, plain wheel pans.
@@ -1437,6 +1463,8 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       if ((e.target as HTMLElement).closest(".dialog, .menu-panel")) return;
+      // A plain scroll over a chat box's messages scrolls them (Ctrl+scroll still zooms).
+      if (!e.ctrlKey && !e.metaKey && (e.target as HTMLElement).closest(".chatbox .chat-list")) return;
       e.preventDefault();
       setFollowing(false);
       if (e.ctrlKey || e.metaKey) {
@@ -1592,6 +1620,8 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       patch,
       finishText,
       reportTyping,
+      chatFor: (thread) => threads.get(thread) ?? NO_CHAT,
+      sendChat: sendTo,
       stopEditing: () => setEditingId(null),
       sendYt,
       onYt,
@@ -1599,7 +1629,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
       openCapsule: (id) => setDialog({ kind: "capsuleOpen", id, title: rowsRef.current.get(id)?.data.title || "Time capsule" }),
       addToCapsule: (id) => setDialog({ kind: "capsuleNote", id }),
     }),
-    [boardId, me, laneOpen, camera.zoom, watchers, serverNow, patch, finishText, reportTyping, sendYt, onYt, setEditingId],
+    [boardId, me, laneOpen, camera.zoom, watchers, serverNow, patch, finishText, reportTyping, threads, sendTo, sendYt, onYt, setEditingId],
   );
 
   /* ---------- Others' live activity ---------- */
@@ -1920,7 +1950,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
             <Icon name="heart" size={18} filled={iLike} />
           </button>
           {selectedRows.length > 1 && <span className="sel-count">{selectedRows.length} selected</span>}
-          {selected && ["text", "note", "image"].includes(selected.type) && (
+          {selected && EDITABLE.includes(selected.type) && (
             <button
               type="button"
               className="icon-btn sm"

@@ -6,7 +6,7 @@ type Ctx = { params: Promise<{ boardId: string }> };
 
 const TYPES: ElementType[] = [
   "stroke", "rect", "ellipse", "arrow", "text", "note", "image", "video",
-  "audio", "youtube", "embed", "link", "capsule", "place", "sticker",
+  "audio", "youtube", "embed", "link", "capsule", "place", "sticker", "chatbox",
 ];
 const MAX_DATA = 400_000;
 const MAX_OPS = 200;
