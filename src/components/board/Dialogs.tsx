@@ -252,9 +252,12 @@ export function AddMediaDialog({
           }}
         >
           <Icon name="upload" size={28} style={{ color: "var(--accent)" }} />
-          <span style={{ fontWeight: 600, fontSize: 15 }}>Drop photos, videos or audio here</span>
+          <span style={{ fontWeight: 600, fontSize: 15 }}>
+            <span className="hide-coarse">Drop photos, videos or audio here</span>
+            <span className="show-coarse">Choose photos, videos or audio</span>
+          </span>
           <span className="muted" style={{ fontSize: 13 }}>
-            or click to browse · up to 25 MB each
+            <span className="hide-coarse">or click to browse · </span>up to 25 MB each
           </span>
         </button>
         <input

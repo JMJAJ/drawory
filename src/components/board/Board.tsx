@@ -1,10 +1,8 @@
 "use client";
 
-import type { SealedLiveQuery } from "@neon/realtime/client";
-import { useLiveQuery } from "@neon/realtime-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon, type IconName } from "@/components/icons";
-import { api } from "@/lib/client/api";
+import { api, ApiError } from "@/lib/client/api";
 import {
   bounds,
   cameraFor,
@@ -21,8 +19,8 @@ import {
   type Camera,
 } from "@/lib/client/elements";
 import { initials, textOn, type Me } from "@/lib/client/identity";
-import { audioPeaks, detectLink, fitWithin, imageSize, videoSize, type DetectedLink } from "@/lib/client/media";
-import type { BoardMeta, ElementData, ElementRow, ElementType, PresenceRow, SignalRow } from "@/lib/types";
+import { audioPeaks, detectLink, fitWithin, imageSize, shrinkPhoto, videoSize, type DetectedLink } from "@/lib/client/media";
+import type { BoardMeta, ElementData, ElementRow, ElementType, PresenceRow } from "@/lib/types";
 import { BoardContext, type BoardCtx, type YtCommand } from "./context";
 import {
   AddMediaDialog,
@@ -36,6 +34,7 @@ import {
 import { ElementView, StrokeSvg } from "./ElementView";
 import { MemoryLane } from "./MemoryLane";
 import { StickerTray } from "./StickerTray";
+import { useBoardSync, type SyncStatus } from "./sync";
 import type { Sticker } from "@/lib/stickers";
 
 type Tool =
@@ -45,7 +44,8 @@ type Tool =
 type Change = { before: ElementRow | null; after: ElementRow | null };
 
 type Gesture =
-  | { kind: "pan"; sx: number; sy: number; cam: Camera }
+  // hold: on touch, keeping a finger still on empty canvas turns the pan into a selection box.
+  | { kind: "pan"; sx: number; sy: number; cam: Camera; hold?: ReturnType<typeof setTimeout> }
   | { kind: "pinch"; d0: number; mx: number; my: number; cam: Camera }
   | { kind: "draw"; points: number[][] }
   | { kind: "shape"; type: "rect" | "ellipse" | "arrow"; ox: number; oy: number }
@@ -81,40 +81,55 @@ const DRAW_TOOLS: Tool[] = ["pen", "rect", "ellipse", "arrow", "text"];
 const TEXT_SIZES = [20, 28, 44];
 const SHAPE_WIDTHS = [2, 3.5, 6];
 const ONLINE_MS = 45_000;
-
-export interface Sealed {
-  elements: SealedLiveQuery<ElementRow>;
-  presence: SealedLiveQuery<PresenceRow>;
-  signals: SealedLiveQuery<SignalRow>;
-}
+const DOUBLE_TAP_MS = 350;
+const HOLD_TO_SELECT_MS = 450;
+const STATUS: Record<SyncStatus, { label: string; title: string }> = {
+  live: { label: "Live", title: "Everyone's changes and cursors appear instantly" },
+  polling: { label: "Synced", title: "The instant connection isn't available here, so the board syncs every second. Tap to retry." },
+  connecting: { label: "Connecting…", title: "Connecting to the board" },
+  offline: { label: "Offline", title: "Can't reach the board right now. Tap to retry." },
+};
 
 function isEditable(t: EventTarget | null) {
   const el = t as HTMLElement | null;
   return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
 }
 
-function relativeTime(date: Date) {
-  const s = (Date.now() - date.getTime()) / 1000;
+/**
+ * Retries a save through a flaky connection (a phone switching networks, a server restart).
+ * Changes stay on screen meanwhile. Requests the server rejected (4xx) aren't retried.
+ */
+async function withRetry<T>(fn: () => Promise<T>) {
+  for (const wait of [1_000, 2_000, 4_000, 8_000, 15_000]) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (e instanceof ApiError && e.status < 500) throw e;
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+  return fn();
+}
+
+function relativeTime(date: Date, now: number) {
+  const s = (now - date.getTime()) / 1000;
   if (s < 90) return "just now";
   if (s < 3600) return `${Math.round(s / 60)} min ago`;
   if (s < 86400) return `${Math.round(s / 3600)} h ago`;
   return `${Math.round(s / 86400)} d ago`;
 }
 
-export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me: Me; onChangeMe: (me: Me) => void; sealed: Sealed }) {
+export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; onChangeMe: (me: Me) => void }) {
   /* ---------- Live data ---------- */
-  const refreshElements = useCallback(() => api.seal<ElementRow>(boardId, "elements"), [boardId]);
-  const refreshPresence = useCallback(() => api.seal<PresenceRow>(boardId, "presence"), [boardId]);
-  const refreshSignals = useCallback(() => api.seal<SignalRow>(boardId, "signals"), [boardId]);
-  const elQ = useLiveQuery(sealed.elements, { refreshQuery: refreshElements });
-  const prQ = useLiveQuery(sealed.presence, { refreshQuery: refreshPresence });
-  const sgQ = useLiveQuery(sealed.signals, { refreshQuery: refreshSignals });
+  const sync = useBoardSync(boardId);
+  const elData = sync.elements;
+  const awaitTxId = sync.awaitTxId;
 
   // Optimistic overlay: local changes show instantly and drop once the live query confirms them.
   const [overlay, setOverlay] = useState(() => new Map<string, { row: ElementRow | null; v: number }>());
   const versionCounter = useRef(0);
 
-  const committed = useMemo(() => new Map((elQ.data ?? []).map((r) => [r.id, r])), [elQ.data]);
+  const committed = useMemo(() => new Map((elData ?? []).map((r) => [r.id, r])), [elData]);
   const rows = useMemo(() => {
     const map = new Map(committed);
     for (const [id, o] of overlay) {
@@ -140,7 +155,8 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
     setCameraState(c);
   }, []);
   const [cameraReady, setCameraReady] = useState(false);
-  const [tool, setTool] = useState<Tool>("pen");
+  // Phones and tablets start on Select, so one finger moves around the board instead of drawing.
+  const [tool, setTool] = useState<Tool>(() => (matchMedia("(pointer: coarse)").matches && !matchMedia("(pointer: fine)").matches ? "select" : "pen"));
   const [colorId, setColorId] = useState("ink");
   const [sizeId, setSizeId] = useState(2);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -184,6 +200,10 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
   const [dropping, setDropping] = useState(false);
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  // How far this device's clock is from the server's. A phone or PC set a few minutes off
+  // would otherwise think everyone else went offline and hide their cursors.
+  const clockOffset = useRef(0);
+  const serverNow = useCallback(() => Date.now() + clockOffset.current, []);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [watching, setWatchingState] = useState<string | null>(null);
 
@@ -193,6 +213,13 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
   const redoStack = useRef<Change[][]>([]);
   const ytHandlers = useRef(new Map<string, Set<(c: YtCommand) => void>>());
   const lastCursor = useRef<{ x: number; y: number } | null>(null);
+  const lastTap = useRef<{ id: string; t: number; x: number; y: number } | null>(null);
+  // iPhones only open the keyboard when focus happens during the tap itself. Focusing this
+  // hidden input then keeps the keyboard up as focus moves on to the new text or list.
+  const keyboardProxy = useRef<HTMLInputElement>(null);
+  const primeKeyboard = (pointerType: string) => {
+    if (pointerType !== "mouse") keyboardProxy.current?.focus({ preventScroll: true });
+  };
 
   const showToast = useCallback((text: string, heart = false) => setToast({ id: Date.now(), text, heart }), []);
   useEffect(() => {
@@ -202,9 +229,9 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
   }, [toast]);
 
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 10_000);
+    const t = setInterval(() => setNow(serverNow()), 5_000);
     return () => clearInterval(t);
-  }, []);
+  }, [serverNow]);
 
   useEffect(() => {
     const attr = document.documentElement.dataset.theme;
@@ -242,12 +269,12 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
   }, [camKey, setCamera]);
   // First visit on this device: frame everything once the board loads.
   useEffect(() => {
-    if (cameraReady || !elQ.data) return;
-    const all = unionBounds(elQ.data);
+    if (cameraReady || !elData) return;
+    const all = unionBounds(elData);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- frame the board once its first rows arrive
     if (all) setCamera(cameraFor(all, window.innerWidth, window.innerHeight));
     setCameraReady(true);
-  }, [cameraReady, elQ.data, setCamera]);
+  }, [cameraReady, elData, setCamera]);
   useEffect(() => {
     const t = setTimeout(() => {
       try {
@@ -297,7 +324,6 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
   }, []);
 
   /* ---------- Writes ---------- */
-  const elUtils = elQ.utils;
   const send = useCallback(
     async (changes: Change[], record = true) => {
       if (changes.length === 0) return;
@@ -320,8 +346,8 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
             : { op: "delete" as const, id: ids[i] },
         );
         for (let i = 0; i < ops.length; i += 200) {
-          const res = await api.applyOps(boardId, ops.slice(i, i + 200), me.id);
-          if (res.txid) await elUtils.awaitTxId(res.txid, 10_000).catch(() => {});
+          const res = await withRetry(() => api.applyOps(boardId, ops.slice(i, i + 200), me.id));
+          if (res.txid) await awaitTxId(res.txid);
         }
       } catch (e) {
         showToast(`Couldn't save: ${e instanceof Error ? e.message : "try again"}`);
@@ -333,7 +359,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
         });
       }
     },
-    [boardId, me.id, elUtils, showToast],
+    [boardId, me.id, awaitTxId, showToast],
   );
   const preview = useCallback(
     (list: { id: string; row: ElementRow | null }[]) => {
@@ -410,8 +436,9 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
     watchingRef.current = watching;
   }, [tool, watching]);
   const pushPresence = useCallback(
-    (hidden = false) => {
+    (hidden = false, leaving = false) => {
       const c = cam.current;
+      const sentAt = Date.now();
       void api
         .presence(boardId, {
           user_id: me.id,
@@ -426,6 +453,15 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
           zoom: c.zoom,
           tool: toolRef.current,
           watching: watchingRef.current,
+        }, leaving)
+        .then((res) => {
+          const rtt = Date.now() - sentAt;
+          // Only trust quick round trips; a slow one says little about the clock.
+          if (!res?.now || rtt >= 2_000) return;
+          const offset = res.now - (sentAt + rtt / 2);
+          const jump = Math.abs(offset - clockOffset.current) > 1_000;
+          clockOffset.current = offset;
+          if (jump) setNow(Date.now() + offset);
         })
         .catch(() => {});
     },
@@ -444,7 +480,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
     pushPresence();
     const beat = setInterval(() => !document.hidden && pushPresence(), 15_000);
     const onVis = () => pushPresence(document.hidden);
-    const onLeave = () => pushPresence(true);
+    const onLeave = () => pushPresence(true, true);
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("pagehide", onLeave);
     return () => {
@@ -457,8 +493,8 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
 
   // Everyone else who has ever opened this board, most recently active first.
   const others = useMemo(
-    () => (prQ.data ?? []).filter((p) => p.user_id !== me.id).sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime()),
-    [prQ.data, me.id],
+    () => (sync.presence ?? []).filter((p) => p.user_id !== me.id).sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime()),
+    [sync.presence, me.id],
   );
   const online = useMemo(() => others.filter((p) => now - p.updated_at.getTime() < ONLINE_MS), [others, now]);
   // The most recent other person, for the "was here" line when nobody else is online.
@@ -482,17 +518,47 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
     return placeAt((window.innerWidth / 2 - camera.x) / camera.zoom, (window.innerHeight / 2 - camera.y) / camera.zoom);
   }, [camera, placeAt]);
 
-  // Follow someone's view: keep the same world centre and zoom as them.
+  // Follow someone's view: same world centre, zoomed so everything they see fits on this
+  // screen (a laptop's view on a phone, or a phone's view on a laptop).
   const followed = followId ? online.find((p) => p.user_id === followId) ?? null : null;
   const followActive = !!followed;
   useEffect(() => {
     if (!followed) return;
-    const z = clampZoom(followed.zoom);
-    const cx = (followed.view_w / 2 - followed.view_x) / followed.zoom;
-    const cy = (followed.view_h / 2 - followed.view_y) / followed.zoom;
+    const fz = followed.zoom || 1;
+    const theirW = (followed.view_w || window.innerWidth) / fz;
+    const theirH = (followed.view_h || window.innerHeight) / fz;
+    const z = clampZoom(Math.min(window.innerWidth / theirW, window.innerHeight / theirH));
+    const cx = (followed.view_w / 2 - followed.view_x) / fz;
+    const cy = (followed.view_h / 2 - followed.view_y) / fz;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- mirrors their camera as their presence row changes
     setCamera({ zoom: z, x: window.innerWidth / 2 - cx * z, y: window.innerHeight / 2 - cy * z });
   }, [followed, setCamera]);
+
+  // People whose cursor (or, without one, view) is off this screen get a marker at the edge
+  // pointing to them, so nobody is ever invisible. Tap it to jump there.
+  const [vp, setVp] = useState(() => ({ w: window.innerWidth, h: window.innerHeight }));
+  useEffect(() => {
+    const onResize = () => setVp({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  const edgeMarkers = useMemo(() => {
+    const margin = 28;
+    const top = 84;
+    const bottom = vp.h - (vp.w <= 720 ? 150 : 100);
+    return online.flatMap((p) => {
+      const hasCursor = p.cursor_x != null && p.cursor_y != null;
+      const fz = p.zoom || 1;
+      const wx = hasCursor ? p.cursor_x! : (p.view_w / 2 - p.view_x) / fz;
+      const wy = hasCursor ? p.cursor_y! : (p.view_h / 2 - p.view_y) / fz;
+      const sx = wx * camera.zoom + camera.x;
+      const sy = wy * camera.zoom + camera.y;
+      if (sx >= 0 && sx <= vp.w && sy >= top && sy <= bottom) return [];
+      const x = Math.min(Math.max(sx, margin), vp.w - margin);
+      const y = Math.min(Math.max(sy, top + margin), bottom - margin);
+      return [{ p, x, y, wx, wy, angle: Math.atan2(sy - y, sx - x) }];
+    });
+  }, [online, camera, vp]);
 
   /* ---------- Signals: hearts, synced video ---------- */
   const spawnHearts = useCallback((x: number, y: number) => {
@@ -513,7 +579,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
     othersRef.current = others;
   }, [others]);
   useEffect(() => {
-    const data = sgQ.data;
+    const data = sync.signals;
     if (!data) return;
     if (!seenSignals.current) {
       seenSignals.current = new Set(data.map((s) => s.id));
@@ -538,7 +604,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
         loadBoard();
       }
     }
-  }, [sgQ.data, me.id, spawnHearts, showToast, loadBoard]);
+  }, [sync.signals, me.id, spawnHearts, showToast, loadBoard]);
 
   function sendHeart(e: React.MouseEvent<HTMLButtonElement>) {
     const r = e.currentTarget.getBoundingClientRect();
@@ -591,7 +657,9 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
   const addFiles = useCallback(
     async (files: File[], at?: { x: number; y: number }) => {
       let offset = 0;
-      for (const file of files) {
+      for (const original of files) {
+        const file = await shrinkPhoto(original);
+        if (file.size > 25 * 1024 * 1024) throw new Error(`${file.name} is over 25 MB`);
         const up = await api.upload(boardId, file, file.name);
         if (up.mime.startsWith("image/")) {
           const s = await imageSize(up.url);
@@ -630,7 +698,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
       author: me.id,
       authorName: me.name,
     });
-    if (res.txid) await elUtils.awaitTxId(res.txid, 10_000).catch(() => {});
+    if (res.txid) await awaitTxId(res.txid);
     setSelectedId(id);
   }
 
@@ -683,6 +751,20 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
     [preview],
   );
 
+  /** Abandons a gesture without saving it, putting back anything it was previewing. */
+  function cancelGesture(g: Gesture | null) {
+    setDraft(null);
+    if (!g) return;
+    if (g.kind === "pan" && g.hold) clearTimeout(g.hold);
+    if (g.kind === "move" && g.moved) g.originals.forEach((r) => dropPreview(r.id));
+    if (g.kind === "resize") dropPreview(g.original.id);
+    if (g.kind === "erase") g.originals.forEach((_, id) => dropPreview(id));
+    if (g.kind === "marquee") {
+      setMarquee(null);
+      setSelectedIds(g.base);
+    }
+  }
+
   function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
     const target = e.target as HTMLElement;
     if (tool === "select" && !laneOpen && target.closest("[data-interactive]")) return;
@@ -710,11 +792,16 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
     // (e.g. let go outside the window); otherwise it would be mistaken for a pinch.
     if (e.isPrimary) pointers.current.clear();
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    // A tap has no movement before it, so it updates where others see you here.
+    if (e.isPrimary) {
+      lastCursor.current = toWorld(e.clientX, e.clientY);
+      schedulePresence();
+    }
 
     if (pointers.current.size === 2) {
-      // Second finger: switch to pinch zoom, discarding a stroke in progress.
+      // Second finger: switch to pinch zoom, undoing whatever the first finger had started.
       const [a, b] = [...pointers.current.values()];
-      setDraft(null);
+      cancelGesture(gesture.current);
       gesture.current = { kind: "pinch", d0: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, cam: { ...cam.current } };
       return;
     }
@@ -739,6 +826,18 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
         if (elId) {
           const row = rowsRef.current.get(elId);
           if (!row) return;
+          // Touch has no double-click: a second tap on the same thing opens it for editing.
+          if (e.pointerType !== "mouse") {
+            const last = lastTap.current;
+            const again = last?.id === elId && e.timeStamp - last.t < DOUBLE_TAP_MS && Math.hypot(e.clientX - last.x, e.clientY - last.y) < 30;
+            lastTap.current = again ? null : { id: elId, t: e.timeStamp, x: e.clientX, y: e.clientY };
+            if (again && ["text", "note", "image"].includes(row.type)) {
+              primeKeyboard(e.pointerType);
+              setSelectedId(elId);
+              setEditingId(elId);
+              return;
+            }
+          }
           if (e.shiftKey || e.ctrlKey || e.metaKey) {
             // Add to or remove from the selection, like Ctrl/Shift-click in a file manager.
             setSelectedIds((ids) => (ids.includes(elId) ? ids.filter((i) => i !== elId) : [...ids, elId]));
@@ -762,6 +861,18 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
         const base = e.shiftKey || e.ctrlKey || e.metaKey ? selectedIds : [];
         if (!base.length) setSelectedIds([]);
         setFollowing(false);
+        if (e.pointerType === "touch") {
+          // A finger drags the board around; press and hold first to draw a selection box.
+          const g: Gesture = { kind: "pan", sx: e.clientX, sy: e.clientY, cam: { ...cam.current } };
+          g.hold = setTimeout(() => {
+            if (gesture.current !== g) return;
+            navigator.vibrate?.(10);
+            gesture.current = { kind: "marquee", wx: w.x, wy: w.y, base: [] };
+            setMarquee({ x: w.x, y: w.y, w: 0, h: 0 });
+          }, HOLD_TO_SELECT_MS);
+          gesture.current = g;
+          return;
+        }
         gesture.current = { kind: "marquee", wx: w.x, wy: w.y, base };
         return;
       }
@@ -783,6 +894,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
         gesture.current = { kind: "shape", type: tool, ox: w.x, oy: w.y };
         return;
       case "text": {
+        primeKeyboard(e.pointerType);
         const existing = elId ? rowsRef.current.get(elId) : null;
         if (existing?.type === "text") {
           setEditingId(existing.id);
@@ -795,6 +907,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
         return;
       }
       case "note": {
+        primeKeyboard(e.pointerType);
         const row = addRow("note", { x: w.x - 130, y: w.y - 30, w: 260, title: "New list", items: [] });
         setEditingId(row.id);
         setTool("select");
@@ -814,6 +927,10 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
 
     switch (g.kind) {
       case "pan":
+        if (g.hold && Math.hypot(e.clientX - g.sx, e.clientY - g.sy) > 8) {
+          clearTimeout(g.hold);
+          g.hold = undefined;
+        }
         setCamera({ ...g.cam, x: g.cam.x + e.clientX - g.sx, y: g.cam.y + e.clientY - g.sy });
         break;
       case "pinch": {
@@ -921,6 +1038,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
     }
     gesture.current = null;
     if (!g) return;
+    if (g.kind === "pan" && g.hold) clearTimeout(g.hold);
     switch (g.kind) {
       case "draw": {
         setDraft(null);
@@ -1059,9 +1177,9 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
   }, [online]);
   const sendYt = useCallback(
     (elementId: string, cmd: Omit<YtCommand, "sentAt">) => {
-      void api.signal(boardId, "yt", me.id, { elementId, ...cmd, sentAt: Date.now() }).catch(() => {});
+      void api.signal(boardId, "yt", me.id, { elementId, ...cmd, sentAt: serverNow() }).catch(() => {});
     },
-    [boardId, me.id],
+    [boardId, me.id, serverNow],
   );
   const onYt = useCallback((elementId: string, handler: (c: YtCommand) => void) => {
     const map = ytHandlers.current;
@@ -1096,6 +1214,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
       readOnly: laneOpen,
       zoom: camera.zoom,
       watchers,
+      serverNow,
       patch,
       finishText,
       stopEditing: () => setEditingId(null),
@@ -1105,7 +1224,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
       openCapsule: (id) => setDialog({ kind: "capsuleOpen", id, title: rowsRef.current.get(id)?.data.title || "Time capsule" }),
       addToCapsule: (id) => setDialog({ kind: "capsuleNote", id }),
     }),
-    [boardId, me, laneOpen, camera.zoom, watchers, patch, finishText, sendYt, onYt, setEditingId],
+    [boardId, me, laneOpen, camera.zoom, watchers, serverNow, patch, finishText, sendYt, onYt, setEditingId],
   );
 
   /* ---------- Render ---------- */
@@ -1117,7 +1236,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
   const stylable = selectedRows.filter((r) => STYLABLE.includes(r.type));
   const showStyle = !laneOpen && (DRAW_TOOLS.includes(tool) || (tool === "select" && stylable.length > 0));
   const activeColor = tool === "select" && stylable[0]?.data.color ? stylable[0].data.color : colorId;
-  const status = elQ.status;
+  const status = sync.status;
   const togetherDays = board?.together_since
     ? Math.floor((now - new Date(`${board.together_since}T00:00:00`).getTime()) / 86_400_000) + 1
     : null;
@@ -1153,6 +1272,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
 
   return (
     <BoardContext.Provider value={ctx}>
+      {sync.nodes}
       <div
         ref={rootRef}
         className={`board-root tool-${laneOpen ? "hand" : tool}${spaceHeld ? " panning" : ""}${laneOpen ? " replay" : ""}`}
@@ -1165,7 +1285,9 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        onPointerLeave={() => {
+        onPointerLeave={(e) => {
+          // A finger lifting also "leaves". Keep showing where they last touched instead.
+          if (e.pointerType !== "mouse") return;
           lastCursor.current = null;
           schedulePresence();
         }}
@@ -1239,6 +1361,28 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
         {dropping && <div className="drop-hint">Drop to add to the board</div>}
       </div>
 
+      {!laneOpen &&
+        edgeMarkers.map((m) => (
+          <button
+            key={m.p.user_id}
+            type="button"
+            className="edge-marker"
+            style={{ left: m.x, top: m.y, ["--c" as string]: m.p.color, color: textOn(m.p.color) }}
+            aria-label={`Go to ${m.p.name}`}
+            title={`${m.p.name} is over here · tap to go`}
+            onClick={() => {
+              setFollowId(null);
+              const z = cam.current.zoom;
+              flyTo({ zoom: z, x: window.innerWidth / 2 - m.wx * z, y: window.innerHeight / 2 - m.wy * z });
+            }}
+          >
+            <span className="edge-arrow" style={{ transform: `rotate(${m.angle}rad)` }} aria-hidden="true" />
+            <span className="edge-name">{m.p.name}</span>
+          </button>
+        ))}
+
+      <input ref={keyboardProxy} className="keyboard-proxy" aria-hidden="true" tabIndex={-1} />
+
       {/* Hearts float over everything. */}
       <div className="hearts" style={{ left: 0, top: 0 }} aria-hidden="true">
         {hearts.map((h) => (
@@ -1274,7 +1418,16 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
           </button>
           {selectedRows.length > 1 && <span className="sel-count">{selectedRows.length} selected</span>}
           {selected && ["text", "note", "image"].includes(selected.type) && (
-            <button type="button" className="icon-btn sm" aria-label="Edit" onClick={() => setEditingId(selected.id)}>
+            <button
+              type="button"
+              className="icon-btn sm"
+              aria-label="Edit"
+              onClick={(e) => {
+                // A tap reports as a click without a mouse; open the phone keyboard then.
+                primeKeyboard((e.nativeEvent as PointerEvent).pointerType || "mouse");
+                setEditingId(selected.id);
+              }}
+            >
               <Icon name="pen" size={18} />
             </button>
           )}
@@ -1341,7 +1494,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
               </nav>
             </div>
 
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div className="topbar-right">
               <div className="pill partner">
                 <div className="partner-avatars">
                   <span className="avatar" title={`${me.name} (you)`} style={{ background: me.color, color: textOn(me.color) }}>
@@ -1384,7 +1537,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
                           ? `${online[0].name} is in ${partnerPlace.data.name}`
                           : `${online[0].name} is here`
                         : partner
-                          ? `${partner.name} was here ${relativeTime(partner.updated_at)}`
+                          ? `${partner.name} was here ${relativeTime(partner.updated_at, now)}`
                           : "Waiting for your person"}
                   </strong>
                   <span>{togetherDays ? `day ${togetherDays} of us` : "set your day one in the menu"}</span>
@@ -1406,8 +1559,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
               </div>
               <button
                 type="button"
-                className="icon-btn surface"
-                style={{ width: 52, height: 52, borderRadius: 16 }}
+                className="icon-btn surface theme-btn"
                 aria-label={theme === "dark" ? "Switch to day" : "Switch to night"}
                 title={theme === "dark" ? "Switch to day" : "Switch to night"}
                 onClick={toggleTheme}
@@ -1483,13 +1635,13 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
                   <Icon name="redo" size={18} />
                 </button>
                 <div className="ctrl-sep" />
-                <button type="button" className="icon-btn sm" aria-label="Zoom out" onClick={() => zoomAt(window.innerWidth / 2, window.innerHeight / 2, camera.zoom / 1.25)}>
+                <button type="button" className="icon-btn sm zoom-step" aria-label="Zoom out" onClick={() => zoomAt(window.innerWidth / 2, window.innerHeight / 2, camera.zoom / 1.25)}>
                   <Icon name="minus" size={18} />
                 </button>
                 <button type="button" className="zoom-label" aria-label="Fit everything" title="Fit everything" onClick={fitAll}>
                   {Math.round(camera.zoom * 100)}%
                 </button>
-                <button type="button" className="icon-btn sm" aria-label="Zoom in" onClick={() => zoomAt(window.innerWidth / 2, window.innerHeight / 2, camera.zoom * 1.25)}>
+                <button type="button" className="icon-btn sm zoom-step" aria-label="Zoom in" onClick={() => zoomAt(window.innerWidth / 2, window.innerHeight / 2, camera.zoom * 1.25)}>
                   <Icon name="plus" size={18} />
                 </button>
               </div>
@@ -1550,10 +1702,18 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
             </div>
 
             <div className="bottom-right">
-              <div className="status-pill" role="status">
-                <span className={`dot${status === "live" ? "" : status === "error" ? " bad" : " warn"}`} />
-                {status === "live" ? "Live" : status === "error" ? "Offline, reload" : "Connecting…"}
-              </div>
+              <button
+                type="button"
+                className="status-pill"
+                role="status"
+                disabled={status === "live"}
+                title={STATUS[status].title}
+                aria-label={`${STATUS[status].label}. ${STATUS[status].title}`}
+                onClick={sync.reconnect}
+              >
+                <span className={`dot ${status}`} />
+                <span className="status-text">{STATUS[status].label}</span>
+              </button>
               <button type="button" className="lane-btn" onClick={() => setLaneOpen(true)}>
                 <Icon name="history" size={18} />
                 <span>Memory lane</span>
@@ -1580,7 +1740,7 @@ export function Board({ boardId, me, onChangeMe, sealed }: { boardId: string; me
           onClose={() => setDialog(null)}
           onAdd={async (body) => {
             const res = await api.addToCapsule(boardId, dialog.id, { body, author: me.id, authorName: me.name });
-            if (res.txid) await elUtils.awaitTxId(res.txid, 10_000).catch(() => {});
+            if (res.txid) await awaitTxId(res.txid);
             showToast("Sealed inside. See you on the day.");
           }}
         />

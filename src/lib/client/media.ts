@@ -95,3 +95,30 @@ export function fitWithin(w: number, h: number, max: number) {
   const scale = Math.min(1, max / Math.max(w, h));
   return { w: Math.round(w * scale), h: Math.round(h * scale) };
 }
+
+const MAX_PHOTO_SIDE = 2560;
+
+/**
+ * Photos straight off a phone are often 4–12 MB. Re-encode big ones at a size that still looks
+ * sharp on the board, so uploads are fast and the database doesn't fill up. GIFs keep their animation.
+ */
+export async function shrinkPhoto(file: File): Promise<File> {
+  if (!/^image\/(jpeg|png|webp|avif)$/.test(file.type) || file.size < 1.5 * 1024 * 1024) return file;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, MAX_PHOTO_SIDE / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext("2d")!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    // PNGs may be screenshots with transparency; keep that with WebP. Photos go to JPEG.
+    const type = file.type === "image/jpeg" ? "image/jpeg" : "image/webp";
+    const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, type, 0.86));
+    // Browsers without WebP encoding hand back a PNG instead; keep the original then.
+    if (!blob || blob.type !== type || blob.size >= file.size) return file;
+    return new File([blob], file.name.replace(/\.\w+$/, type === "image/jpeg" ? ".jpg" : ".webp"), { type });
+  } catch {
+    return file;
+  }
+}

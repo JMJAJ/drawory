@@ -45,8 +45,16 @@ export const api = {
   applyOps(boardId: string, ops: ElementOp[], author: string) {
     return request<{ kind: "committed"; txid: string | null }>(`${base(boardId)}/elements`, json({ ops, author }));
   },
-  presence(boardId: string, body: Record<string, unknown>) {
-    return request<void>(`${base(boardId)}/presence`, { ...json(body), keepalive: true });
+  /** keepalive lets the last update (leaving the page) finish after the tab closes. */
+  presence(boardId: string, body: Record<string, unknown>, keepalive = false) {
+    return request<{ now: number }>(`${base(boardId)}/presence`, { ...json(body), keepalive });
+  },
+  snapshot<Row>(boardId: string, query: LiveQueryName, v?: string) {
+    const params = new URLSearchParams({ q: query });
+    if (v) params.set("v", v);
+    return request<{ rows?: Row[]; unchanged?: boolean; v?: string; now: number }>(`${base(boardId)}/snapshot?${params}`, {
+      cache: "no-store",
+    });
   },
   signal(boardId: string, kind: "heart" | "yt", from: string, payload: Record<string, unknown> = {}) {
     return request<void>(`${base(boardId)}/signals`, json({ kind, from, payload }));

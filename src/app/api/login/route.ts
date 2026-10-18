@@ -1,12 +1,11 @@
 import type { NextRequest } from "next/server";
 import { authEnabled, isValidPasscode, SESSION_COOKIE, sessionToken } from "@/lib/auth";
 
-const cookieOptions = {
-  httpOnly: true,
-  sameSite: "lax" as const,
-  secure: process.env.NODE_ENV === "production",
-  path: "/",
-};
+/** Secure cookies only over HTTPS, so signing in also works on a home network address like http://192.168.1.20:3000. */
+function isHttps(req: NextRequest) {
+  const forwarded = req.headers.get("x-forwarded-proto")?.split(",")[0].trim();
+  return (forwarded ?? req.nextUrl.protocol.replace(":", "")) === "https";
+}
 
 export async function POST(req: NextRequest) {
   if (!authEnabled()) return Response.json({ ok: true });
@@ -20,11 +19,11 @@ export async function POST(req: NextRequest) {
   const res = Response.json({ ok: true });
   const cookie = [
     `${SESSION_COOKIE}=${await sessionToken()}`,
-    `Path=${cookieOptions.path}`,
+    "Path=/",
     "HttpOnly",
     "SameSite=Lax",
     `Max-Age=${60 * 60 * 24 * 365}`,
-    cookieOptions.secure ? "Secure" : "",
+    isHttps(req) ? "Secure" : "",
   ]
     .filter(Boolean)
     .join("; ");

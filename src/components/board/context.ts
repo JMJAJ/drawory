@@ -13,6 +13,8 @@ export interface BoardCtx {
   zoom: number;
   /** Names of other people currently playing each YouTube element, keyed by element id. */
   watchers: Record<string, string[]>;
+  /** Date.now() corrected to the server's clock, for timing shared between devices. */
+  serverNow(): number;
   /** Change an element. commit=false only updates this screen (used while typing or dragging). */
   patch(id: string, data: Partial<ElementData>, commit?: boolean): void;
   finishText(id: string, text: string): void;

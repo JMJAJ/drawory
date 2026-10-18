@@ -15,12 +15,15 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "drawory",
   description: "An endless canvas for the two of you.",
+  appleWebApp: { capable: true, title: "drawory", statusBarStyle: "default" },
 };
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
+  // Draw edge to edge on phones with a notch; the bars keep clear using safe-area insets.
+  viewportFit: "cover",
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#F5F5F7" },
     { media: "(prefers-color-scheme: dark)", color: "#0B0B0E" },

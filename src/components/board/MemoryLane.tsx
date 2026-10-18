@@ -158,12 +158,11 @@ export function MemoryLane({
         <div className="pill lane-banner">
           <Icon name="history" size={18} style={{ color: "var(--accent)" }} />
           <strong>Replaying your board</strong>
-          <span className="muted">· {partnerName ? `everything you and ${partnerName} made` : "everything you've made"}</span>
+          <span className="muted lane-sub">· {partnerName ? `everything you and ${partnerName} made` : "everything you've made"}</span>
         </div>
         <button
           type="button"
-          className="icon-btn surface"
-          style={{ width: 52, height: 52, borderRadius: 16 }}
+          className="icon-btn surface theme-btn"
           aria-label={theme === "dark" ? "Switch to day" : "Switch to night"}
           onClick={onToggleTheme}
         >
