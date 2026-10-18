@@ -39,6 +39,7 @@ import { RemoteCursor } from "./RemoteCursor";
 import { MemoryLane } from "./MemoryLane";
 import { StickerTray } from "./StickerTray";
 import { useBoardSync, type SyncStatus } from "./sync";
+import { useRoomSocket } from "./socket";
 import type { Sticker } from "@/lib/stickers";
 
 type Tool =
@@ -448,40 +449,62 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   const presenceInflight = useRef(false);
   const presencePending = useRef(false);
   const pushPresenceRef = useRef<(hidden?: boolean, leaving?: boolean) => void>(() => {});
+  /** Server time from either the relay or a presence write; rtt is the round trip it took. */
+  const applyClock = useCallback((serverTime: number, rtt: number) => {
+    // Only trust quick round trips; a slow one says little about the clock.
+    if (!serverTime || rtt >= 2_000) return;
+    const offset = serverTime + rtt / 2 - Date.now();
+    const jump = Math.abs(offset - clockOffset.current) > 1_000;
+    clockOffset.current = offset;
+    if (jump) setNow(Date.now() + offset);
+  }, []);
+  // The room's live relay: cursors and live activity reach others in milliseconds.
+  const sock = useRoomSocket(boardId, me.id, applyClock);
+  const sockRef = useRef(sock);
+  useEffect(() => {
+    sockRef.current = sock;
+  });
+  const lastDbPresence = useRef({ at: 0, kind: "" as string });
+
   const pushPresence = useCallback(
     (hidden = false, leaving = false) => {
-      // One update in flight at a time; the latest state goes out as soon as it lands.
+      const c = cam.current;
+      const activity = hidden ? null : activityRef.current;
+      const body = {
+        user_id: me.id,
+        name: me.name,
+        color: me.color,
+        cursor_x: hidden ? null : lastCursor.current?.x ?? null,
+        cursor_y: hidden ? null : lastCursor.current?.y ?? null,
+        view_x: c.x,
+        view_y: c.y,
+        view_w: window.innerWidth,
+        view_h: window.innerHeight,
+        zoom: c.zoom,
+        tool: toolRef.current,
+        watching: watchingRef.current,
+        activity,
+      };
+      // Everyone on the relay gets every update straight away.
+      const viaRelay = sockRef.current.send({ t: "p", p: body });
+      // The database copy is for anyone who can't reach the relay, and remembers "was here".
+      // With the relay up it only needs refreshing every few seconds, or when what I'm doing changes
+      // (so nobody is left looking at a stroke I already finished).
+      const kind = activity?.k ?? "";
+      const db = lastDbPresence.current;
+      if (viaRelay && !hidden && !leaving && kind === db.kind && Date.now() - db.at < 4_000) return;
+      // One database write in flight at a time; the latest state goes out as soon as it lands.
       if (presenceInflight.current && !hidden && !leaving) {
         presencePending.current = true;
         return;
       }
       presenceInflight.current = true;
-      const c = cam.current;
+      lastDbPresence.current = { at: Date.now(), kind };
       const sentAt = Date.now();
       void api
-        .presence(boardId, {
-          user_id: me.id,
-          name: me.name,
-          color: me.color,
-          cursor_x: hidden ? null : lastCursor.current?.x ?? null,
-          cursor_y: hidden ? null : lastCursor.current?.y ?? null,
-          view_x: c.x,
-          view_y: c.y,
-          view_w: window.innerWidth,
-          view_h: window.innerHeight,
-          zoom: c.zoom,
-          tool: toolRef.current,
-          watching: watchingRef.current,
-          activity: hidden ? null : activityRef.current,
-        }, leaving)
+        .presence(boardId, body, leaving)
         .then((res) => {
-          const rtt = Date.now() - sentAt;
-          // Only trust quick round trips; a slow one says little about the clock.
-          if (!res?.now || rtt >= 2_000) return;
-          const offset = res.now - (sentAt + rtt / 2);
-          const jump = Math.abs(offset - clockOffset.current) > 1_000;
-          clockOffset.current = offset;
-          if (jump) setNow(Date.now() + offset);
+          if (res?.now) applyClock(res.now, Date.now() - sentAt);
         })
         .catch(() => {})
         .finally(() => {
@@ -492,7 +515,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
           }
         });
     },
-    [boardId, me],
+    [boardId, me, applyClock],
   );
   useEffect(() => {
     pushPresenceRef.current = pushPresence;
@@ -500,8 +523,11 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   const schedulePresence = useCallback(() => {
     if (presenceTimer.current) return;
     // While actively drawing/dragging/typing, update faster so others see it smoothly.
+    // Over the relay that's ~40 times a second; through the database, ~25.
     const busy = activityRef.current && activityRef.current.k !== "select";
-    const wait = Math.max(0, (busy ? 40 : 70) - (Date.now() - lastPresence.current));
+    const relay = sockRef.current.connected;
+    const gap = relay ? (busy ? 25 : 40) : busy ? 40 : 70;
+    const wait = Math.max(0, gap - (Date.now() - lastPresence.current));
     presenceTimer.current = setTimeout(() => {
       presenceTimer.current = null;
       lastPresence.current = Date.now();
@@ -561,10 +587,13 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   }, [selectedIds, schedulePresence]);
 
   // Everyone else who has ever opened this board, most recently active first.
-  const others = useMemo(
-    () => (sync.presence ?? []).filter((p) => p.user_id !== me.id).sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime()),
-    [sync.presence, me.id],
-  );
+  const others = useMemo(() => {
+    const merged = new Map<string, PresenceRow>();
+    for (const p of sync.presence ?? []) if (p.user_id !== me.id) merged.set(p.user_id, p);
+    // Anyone on the relay: use its far fresher copy.
+    for (const [id, p] of sock.peers) if (id !== me.id) merged.set(id, p);
+    return [...merged.values()].sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime());
+  }, [sync.presence, sock.peers, me.id]);
   const online = useMemo(() => others.filter((p) => now - p.updated_at.getTime() < ONLINE_MS), [others, now]);
   // The most recent other person, for the "was here" line when nobody else is online.
   const partner = online[0] ?? others[0] ?? null;
@@ -647,6 +676,34 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   useEffect(() => {
     othersRef.current = others;
   }, [others]);
+  // Waves and video sync can arrive twice: instantly over the relay, then again from the database
+  // (which is how people without the relay get them). `sid` tells the copies apart.
+  const seenSids = useRef(new Set<string>());
+  const handleSignal = useCallback(
+    (kind: string, from: string, payload: Record<string, unknown>) => {
+      const sid = typeof payload.sid === "string" ? payload.sid : null;
+      if (sid) {
+        if (seenSids.current.has(sid)) return;
+        seenSids.current.add(sid);
+        if (seenSids.current.size > 500) seenSids.current = new Set([...seenSids.current].slice(-200));
+      }
+      if (kind === "wave" || kind === "heart") {
+        const p = othersRef.current.find((o) => o.user_id === from);
+        const c = cam.current;
+        const visible = p?.cursor_x != null && p.cursor_y != null;
+        const x = visible ? p!.cursor_x! * c.zoom + c.x : window.innerWidth - 220;
+        const y = visible ? p!.cursor_y! * c.zoom + c.y : 90;
+        spawnHearts(Math.min(Math.max(x, 40), window.innerWidth - 40), Math.min(Math.max(y, 120), window.innerHeight - 40));
+        showToast(`${p?.name ?? "Someone"} waved at you`, true);
+      } else if (kind === "yt") {
+        const cmd = payload as { elementId?: string } & YtCommand;
+        if (cmd.elementId) ytHandlers.current.get(cmd.elementId)?.forEach((h) => h(cmd));
+      } else if (kind === "board") {
+        loadBoard();
+      }
+    },
+    [spawnHearts, showToast, loadBoard],
+  );
   useEffect(() => {
     const data = sync.signals;
     if (!data) return;
@@ -657,28 +714,26 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
     for (const s of [...data].reverse()) {
       if (seenSignals.current.has(s.id)) continue;
       seenSignals.current.add(s.id);
-      if (s.from_user === me.id) continue;
-      if (s.kind === "wave" || s.kind === "heart") {
-        const p = othersRef.current.find((o) => o.user_id === s.from_user);
-        const c = cam.current;
-        const visible = p?.cursor_x != null && p.cursor_y != null;
-        const x = visible ? p!.cursor_x! * c.zoom + c.x : window.innerWidth - 220;
-        const y = visible ? p!.cursor_y! * c.zoom + c.y : 90;
-        spawnHearts(Math.min(Math.max(x, 40), window.innerWidth - 40), Math.min(Math.max(y, 120), window.innerHeight - 40));
-        showToast(`${p?.name ?? "Someone"} waved at you`, true);
-      } else if (s.kind === "yt") {
-        const payload = s.payload as { elementId?: string } & YtCommand;
-        if (payload.elementId) ytHandlers.current.get(payload.elementId)?.forEach((h) => h(payload));
-      } else if (s.kind === "board") {
-        loadBoard();
-      }
+      if (s.from_user !== me.id) handleSignal(s.kind, s.from_user, s.payload ?? {});
     }
-  }, [sync.signals, me.id, spawnHearts, showToast, loadBoard]);
+  }, [sync.signals, me.id, handleSignal]);
+  const onRelaySignal = sock.onSignal;
+  useEffect(() => onRelaySignal((s) => handleSignal(s.kind, s.from, s.payload)), [onRelaySignal, handleSignal]);
+
+  /** Sends over the relay (instant) and the database (reaches everyone, kept briefly). */
+  const sendSignal = useCallback(
+    (kind: "wave" | "yt", payload: Record<string, unknown> = {}) => {
+      const withSid = { ...payload, sid: newId() };
+      sockRef.current.send({ t: "s", kind, payload: withSid });
+      return api.signal(boardId, kind, me.id, withSid);
+    },
+    [boardId, me.id],
+  );
 
   function sendWave(e: React.MouseEvent<HTMLButtonElement>) {
     const r = e.currentTarget.getBoundingClientRect();
     spawnHearts(r.left + r.width / 2, r.top + r.height);
-    void api.signal(boardId, "wave", me.id).catch(() => showToast("Couldn't send the wave"));
+    void sendSignal("wave").catch(() => showToast("Couldn't send the wave"));
   }
 
   async function copyInvite() {
@@ -1278,9 +1333,9 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
   }, [online]);
   const sendYt = useCallback(
     (elementId: string, cmd: Omit<YtCommand, "sentAt">) => {
-      void api.signal(boardId, "yt", me.id, { elementId, ...cmd, sentAt: serverNow() }).catch(() => {});
+      void sendSignal("yt", { elementId, ...cmd, sentAt: serverNow() }).catch(() => {});
     },
-    [boardId, me.id, serverNow],
+    [sendSignal, serverNow],
   );
   const onYt = useCallback((elementId: string, handler: (c: YtCommand) => void) => {
     const map = ytHandlers.current;
@@ -1943,7 +1998,7 @@ export function Board({ boardId, me, onChangeMe }: { boardId: string; me: Me; on
                 className="status-pill"
                 role="status"
                 disabled={status === "live"}
-                title={STATUS[status].title}
+                title={`${STATUS[status].title}. ${sock.connected ? "Cursors and live activity: instant (relay connected)." : "Cursors and live activity: through the database (relay not reachable)."}`}
                 aria-label={`${STATUS[status].label}. ${STATUS[status].title}`}
                 onClick={sync.reconnect}
               >

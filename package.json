@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node server.mjs --dev",
     "build": "next build",
-    "start": "next start",
+    "start": "node server.mjs",
     "lint": "eslint",
     "db:migrate": "node --env-file=.env.local scripts/migrate.mjs",
     "test:smoke": "node --env-file=.env.local scripts/smoke.mjs"

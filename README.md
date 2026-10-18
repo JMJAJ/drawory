@@ -31,6 +31,16 @@ Anyone with a room's code can join it. To lock the whole site behind one passcod
 
 ## How sync works
 
+Two channels, each doing what it's best at:
+
+| What | How | Speed |
+| --- | --- | --- |
+| Board content (strokes, notes, photos, history) | Saved in Postgres, streamed by Neon Realtime | ~150 ms, durable |
+| Cursors, live activity, waves, video sync | WebSocket relay in `server.mjs`, room by room, never stored | ~20–30 ms, ~40 updates/s |
+
+- `npm run start` runs `server.mjs`: the Next.js app plus the relay on `/ws`, one process and one port, so it's free wherever Node runs. The relay checks the room exists (and the site passcode, if set), then passes each update to everyone else in the room. Newcomers get everyone's current state at once.
+- If the relay can't be reached (a host without WebSockets, like Vercel), the board quietly does the same through the database instead, just slower. Presence is also written to the database every few seconds while on the relay, so people without it still see you, and "was here 2 h ago" works.
+- `node --env-file=.env.local scripts/ws-check.mjs ws://localhost:3000` checks the relay on a running server.
 - A room's id is its code (`POST /api/rooms` makes one). Codes nobody created are a 404, never a new room.
 - The board, cursors and signals (waves, synced video) are three **Neon Realtime live queries**, sealed per board by `POST /api/boards/:id/live` and renewed before they expire.
 - If the live connection can't be reached (Realtime not set up, the site's address not in its allowed origins yet, a network that blocks WebSockets, a phone that just woke up), the board switches to polling `GET /api/boards/:id/snapshot` after 5 seconds: about once a second for the board, a bit faster for cursors. It keeps trying to go live again, and switches back the moment it can. The status pill (bottom right) says **Live**, **Synced** (polling), **Connecting…** or **Offline**; tap it to retry.
@@ -52,7 +62,14 @@ On your home Wi-Fi you can use it from your phone without hosting it anywhere: r
 
 ## Deploying
 
-Any Node host that runs `npm run build` and `npm run start` works (Render, Railway, Fly.io, a VPS). Prefer one that runs a long-lived server: Vercel's serverless functions cap request bodies at 4.5 MB, which would limit video and voice uploads.
+Any Node host that runs `npm run build` and `npm run start` works, as long as it keeps a server running (that's what the WebSocket relay needs).
+
+**Free options**
+- **Your own computer**: `npm run build && npm run start`. On the same Wi-Fi, others open `http://<your computer's IP>:3000`. From anywhere, put a free tunnel in front, e.g. `cloudflared tunnel --url http://localhost:3000` (WebSockets work through it).
+- **Render free web service**: connect the GitHub repo, build command `npm install && npm run build`, start command `npm run start`, add the environment variables. WebSockets work. Free instances sleep after 15 minutes without visitors and take ~1 minute to wake on the next visit.
+- The database stays on Neon's free plan either way.
+
+Vercel also works but has no WebSockets, so cursors and live activity go through the database (slower), and its 4.5 MB request limit cuts off bigger video and voice uploads.
 
 1. Set the environment variables above on the host. `NEXT_PUBLIC_NEON_REALTIME_URL` must be there at build time.
 2. Run `npm run db:migrate` once against the database (safe to re-run).
