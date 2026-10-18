@@ -1,4 +1,6 @@
-// Built-in stickers. Images load from Discord's CDN; nothing is copied into the app.
+// Built-in stickers. The first time one is shown, the server copies it from Discord into the
+// database and serves it from there forever after (/api/stickers/...), so they keep working
+// even if Discord moves or removes them.
 
 export interface Sticker {
   name: string;
@@ -6,8 +8,21 @@ export interface Sticker {
   animated?: boolean;
 }
 
-const png = (id: string) => `https://cdn.discordapp.com/stickers/${id}.png`;
-const gif = (id: string) => `https://media.discordapp.net/stickers/${id}.gif`;
+const png = (id: string) => `/api/stickers/${id}.png`;
+const gif = (id: string) => `/api/stickers/${id}.gif`;
+
+/** Where to fetch a sticker file from Discord the first time. */
+export function discordStickerUrl(file: string) {
+  return file.endsWith(".gif") ? `https://media.discordapp.net/stickers/${file}` : `https://cdn.discordapp.com/stickers/${file}`;
+}
+
+const DISCORD_STICKER = /^https:\/\/(?:cdn\.discordapp\.com|media\.discordapp\.net)\/stickers\/(\d+\.(?:png|gif))/;
+
+/** Stickers placed before caching existed point at Discord; serve those from the cache too. */
+export function stickerSrc(src: string | undefined) {
+  const m = src ? DISCORD_STICKER.exec(src) : null;
+  return m ? `/api/stickers/${m[1]}` : src;
+}
 
 export const STICKERS: Sticker[] = [
   { name: "Meryl Look", url: png("963704471345590273") },

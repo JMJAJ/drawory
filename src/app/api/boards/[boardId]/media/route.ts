@@ -25,5 +25,14 @@ export const POST = handler<Ctx>(async (req, { params }) => {
     bytes.length,
     bytes,
   ]);
+  // Tidy up: uploads that never made it onto the board (closed dialog, failed add) are dropped
+  // after a day. Anything that was ever on the board stays, so Memory Lane can still show it.
+  void pool
+    .query(
+      `delete from media m where m.board_id = $1 and m.created_at < now() - interval '1 day'
+         and not exists (select 1 from element_events e where e.board_id = m.board_id and e.data->>'src' = '/api/media/' || m.id::text)`,
+      [boardId],
+    )
+    .catch((e) => console.error("media cleanup", e));
   return Response.json({ id, url: `/api/media/${id}`, mime });
 });

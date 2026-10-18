@@ -101,6 +101,8 @@ body {
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
 }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
@@ -218,6 +220,8 @@ button:disabled { cursor: default; opacity: 0.55; }
   overflow: hidden;
   touch-action: none;
   user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
   background-color: var(--bg);
   background-image: radial-gradient(var(--dot) 1px, transparent 1px);
 }
@@ -231,10 +235,13 @@ button:disabled { cursor: default; opacity: 0.55; }
 .hud { position: absolute; z-index: 20; pointer-events: none; }
 .hud > * { pointer-events: auto; }
 .topbar {
-  left: 16px; right: 16px; top: 16px;
+  left: max(16px, env(safe-area-inset-left)); right: max(16px, env(safe-area-inset-right));
+  top: max(16px, env(safe-area-inset-top));
   display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px;
 }
 .topbar-left { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.topbar-right { display: flex; align-items: center; gap: 8px; }
+.theme-btn { width: 52px; height: 52px; border-radius: 16px; }
 .pill {
   display: flex; align-items: center; gap: 4px;
   padding: 4px; border-radius: 16px;
@@ -259,7 +266,8 @@ button:disabled { cursor: default; opacity: 0.55; }
 .icon-btn[aria-pressed="true"] { background: var(--text); color: var(--bg); }
 
 .bottombar {
-  left: 16px; right: 16px; bottom: 18px;
+  left: max(16px, env(safe-area-inset-left)); right: max(16px, env(safe-area-inset-right));
+  bottom: max(18px, env(safe-area-inset-bottom));
   display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px;
 }
 .bottom-left, .bottom-right { display: flex; align-items: center; gap: 8px; }
@@ -270,9 +278,13 @@ button:disabled { cursor: default; opacity: 0.55; }
   display: flex; align-items: center; gap: 8px; height: 46px; padding: 0 14px;
   border-radius: 14px; background: var(--surface); border: 1px solid var(--border); font-size: 13px; color: var(--muted);
 }
+.status-pill:disabled { opacity: 1; }
+.status-pill:not(:disabled):hover { background: var(--soft); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex: none; }
-.dot.warn { background: #e39a1c; }
-.dot.bad { background: var(--accent); }
+/* Synced by polling: still working, just not instant. */
+.dot.polling { background: transparent; box-shadow: inset 0 0 0 2px var(--green); }
+.dot.connecting { background: #e39a1c; }
+.dot.offline { background: var(--accent); }
 .lane-btn {
   display: flex; align-items: center; gap: 8px; height: 46px; padding: 0 16px; border-radius: 14px;
   background: var(--surface); border: 1px solid var(--border); font-weight: 600; font-size: 14px;
@@ -442,6 +454,26 @@ button:disabled { cursor: default; opacity: 0.55; }
   .cursor { transition: none; }
 }
 
+/* Someone off screen: a marker on the edge pointing toward them. */
+.edge-marker {
+  position: fixed; z-index: 25; transform: translate(-50%, -50%);
+  display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px 0 8px;
+  border: 0; border-radius: 999px; background: var(--c); font-size: 12px; font-weight: 700;
+  box-shadow: 0 4px 14px var(--shadow-strong); transition: left 120ms linear, top 120ms linear;
+}
+.edge-arrow {
+  width: 0; height: 0; border-top: 5px solid transparent; border-bottom: 5px solid transparent;
+  border-left: 8px solid currentColor; flex: none;
+}
+.edge-name { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { .edge-marker { transition: none; } }
+
+/* Kept off screen; see keyboardProxy in Board. 16px so iOS doesn't zoom in on focus. */
+.keyboard-proxy {
+  position: fixed; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0;
+  font-size: 16px; pointer-events: none;
+}
+
 /* Selection toolbar */
 .sel-toolbar {
   position: absolute; z-index: 30; display: flex; gap: 2px; padding: 4px; border-radius: 14px;
@@ -547,12 +579,67 @@ button:disabled { cursor: default; opacity: 0.55; }
 .playhead { position: absolute; top: 34px; bottom: 14px; width: 2px; margin-left: -1px; border-radius: 2px; background: var(--text); pointer-events: none; }
 .track-ends { position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
 
+/* ---------- Phones and small tablets ---------- */
 @media (max-width: 720px) {
+  .topbar { left: max(10px, env(safe-area-inset-left)); right: max(10px, env(safe-area-inset-right)); top: max(10px, env(safe-area-inset-top)); gap: 8px; }
+  /* Menu and people on one row, places scrolling sideways underneath. */
+  .topbar-left { display: contents; }
+  .topbar-left > .pill:first-child { order: 1; }
+  .topbar-right { order: 2; margin-left: auto; }
+  .places { order: 3; flex: 0 1 auto; max-width: 100%; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  /* Forces the places pill onto its own row without stretching it. */
+  .topbar::after { content: ""; order: 2; flex-basis: 100%; height: 0; margin-top: -8px; }
+  .places::-webkit-scrollbar { display: none; }
   .partner-text { display: none; }
-  .status-pill { display: none; }
+  .theme-btn { width: 46px; height: 46px; border-radius: 14px; }
+
+  .bottombar { left: max(8px, env(safe-area-inset-left)); right: max(8px, env(safe-area-inset-right)); bottom: max(8px, env(safe-area-inset-bottom)); gap: 8px; }
+  /* Undo and Memory Lane on one row, the tools on their own full-width row below. */
+  .bottom-left { order: 1; }
+  .bottom-right { order: 2; margin-left: auto; }
+  .dock-wrap { order: 3; flex: 1 1 100%; min-width: 0; }
+  .dock {
+    flex-wrap: nowrap; justify-content: flex-start; max-width: 100%; overflow-x: auto;
+    scrollbar-width: none; overscroll-behavior-x: contain; touch-action: pan-x;
+  }
+  .dock::-webkit-scrollbar { display: none; }
+  .tool-btn { flex: none; }
+  .zoom-step, .bottom-left .ctrl-sep { display: none; }
+  .status-pill { width: 46px; padding: 0; justify-content: center; }
+  .status-text { display: none; }
+  .lane-btn { width: 46px; padding: 0; justify-content: center; }
   .lane-btn span { display: none; }
-  .timeline { padding: 14px; }
+  .style-bar { max-width: 100%; flex-wrap: nowrap; gap: 4px; padding: 5px 6px; overflow-x: auto; scrollbar-width: none; }
+  .style-bar .swatch { width: 28px; height: 28px; flex: none; }
+  .style-bar .width-btn { width: 34px; flex: none; }
+  .lane-banner { white-space: nowrap; }
+  .lane-sub { display: none; }
+  /* The sticker tray floats above the tools instead of pushing the bars up. */
+  .sticker-tray { position: fixed; left: 8px; right: 8px; bottom: calc(132px + env(safe-area-inset-bottom)); width: auto; max-height: 50dvh; }
+  .menu-panel { left: 10px; top: calc(66px + env(safe-area-inset-top)); width: calc(100% - 20px); max-height: calc(100dvh - 90px); overflow: auto; }
+  .toast { top: auto; bottom: calc(140px + env(safe-area-inset-bottom)); max-width: calc(100% - 24px); }
+  .dialog-backdrop { padding: 10px; align-items: end; }
+  .dialog { padding: 18px; border-radius: 18px; max-height: calc(100dvh - 20px); }
+  .detected { flex-wrap: wrap; }
+  .detected-thumb { width: 100%; height: auto; aspect-ratio: 16 / 9; }
+  .timeline { padding: 14px; bottom: max(10px, env(safe-area-inset-bottom)); width: calc(100% - 20px); }
   .mark { font-size: 11px; padding: 0 8px; }
+  /* Inputs under 16px make iOS zoom the whole page when focused. */
+  .input, .textarea, .url-field input, .sticker-search input { font-size: 16px; }
+}
+@media (max-width: 400px) {
+  .brand span:last-child { display: none; }
+  .partner { gap: 6px; }
+}
+
+.show-coarse { display: none; }
+/* Fingers need bigger targets than a mouse. */
+@media (pointer: coarse) {
+  .show-coarse { display: inline; }
+  .hide-coarse { display: none; }
+  .resize-handle { width: 22px; height: 22px; right: -16px; bottom: -16px; border-radius: 6px; }
+  .resize-handle::before { content: ""; position: absolute; inset: -12px; }
+  .check-box { width: 26px; height: 26px; }
 }
 
 /* Clicks reach card controls and embeds only with the Select tool, so drawing over them works. */

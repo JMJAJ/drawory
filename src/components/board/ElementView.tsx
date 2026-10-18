@@ -4,6 +4,7 @@ import { getStroke } from "perfect-freehand";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
 import { bounds, colorValue, RESIZABLE } from "@/lib/client/elements";
+import { stickerSrc } from "@/lib/stickers";
 import type { ElementRow } from "@/lib/types";
 import { useBoard } from "./context";
 import { loadYouTube, type YTPlayer } from "./youtube";
@@ -336,7 +337,7 @@ function YouTubeView({ row }: { row: ElementRow }) {
   const player = useRef<YTPlayer | null>(null);
   const remoteUntil = useRef(0);
   const [playing, setPlaying] = useState(false);
-  const { sendYt, onYt, setWatching } = ctx;
+  const { sendYt, onYt, setWatching, serverNow } = ctx;
 
   useEffect(() => {
     if (!d.videoId || !host.current) return;
@@ -382,13 +383,13 @@ function YouTubeView({ row }: { row: ElementRow }) {
         const p = player.current;
         if (!p) return;
         remoteUntil.current = Date.now() + 1500;
-        const lag = Math.min(3, Math.max(0, (Date.now() - cmd.sentAt) / 1000));
+        const lag = Math.min(3, Math.max(0, (serverNow() - cmd.sentAt) / 1000));
         const target = cmd.action === "play" ? cmd.time + lag : cmd.time;
         if (Math.abs(p.getCurrentTime() - target) > 1.2) p.seekTo(target, true);
         if (cmd.action === "play") p.playVideo();
         else p.pauseVideo();
       }),
-    [onYt, row.id],
+    [onYt, row.id, serverNow],
   );
 
   const others = ctx.watchers[row.id] ?? [];
@@ -596,7 +597,7 @@ export const ElementView = memo(function ElementView({ row, selected, solo, edit
       break;
     case "sticker":
       // eslint-disable-next-line @next/next/no-img-element
-      content = <img className="sticker-img" src={row.data.src} alt={row.data.name || "Sticker"} draggable={false} />;
+      content = <img className="sticker-img" src={stickerSrc(row.data.src)} alt={row.data.name || "Sticker"} draggable={false} />;
       break;
   }
 

@@ -3,7 +3,10 @@ import { boardIdFrom, cleanString, finiteNumber, handler, HttpError, UUID } from
 
 type Ctx = { params: Promise<{ boardId: string }> };
 
-/** Upserts the caller's cursor, viewport and activity. Sent a few times a second while active. */
+/**
+ * Upserts the caller's cursor, viewport and activity. Sent a few times a second while active.
+ * Answers with the server's clock, so devices with a wrong clock still agree on who's online.
+ */
 export const POST = handler<Ctx>(async (req, { params }) => {
   const boardId = boardIdFrom((await params).boardId);
   const b = await req.json();
@@ -35,5 +38,5 @@ export const POST = handler<Ctx>(async (req, { params }) => {
       watching,
     ],
   );
-  return new Response(null, { status: 204 });
+  return Response.json({ now: Date.now() });
 });

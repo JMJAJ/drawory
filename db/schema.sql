@@ -92,3 +92,11 @@ create table if not exists capsules (
   board_id   text not null references boards(id) on delete cascade,
   unlock_at  timestamptz not null
 );
+
+-- Built-in sticker images, copied from Discord the first time each is shown.
+create table if not exists sticker_cache (
+  file       text primary key,
+  mime       text not null,
+  bytes      bytea not null,
+  created_at timestamptz not null default now()
+);

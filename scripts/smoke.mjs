@@ -79,11 +79,23 @@ await elSub.awaitTxId((await upd.json()).txid, 10_000).catch(() => {});
 check("Element update streams", await waitFor(() => (elSub.getSnapshot().data ?? []).some((r) => r.id === id && r.data.x === 50 && r.data.items[0].done)));
 
 // 5. Presence and signals
-await call(`/api/boards/${BOARD}/presence`, json({ user_id: "smoke-user", name: "Smoke", color: "#2F6BD0", cursor_x: 12.5, cursor_y: 40, view_x: 0, view_y: 0, view_w: 1440, view_h: 900, zoom: 1, tool: "pen" }));
+const pres = await call(`/api/boards/${BOARD}/presence`, json({ user_id: "smoke-user", name: "Smoke", color: "#2F6BD0", cursor_x: 12.5, cursor_y: 40, view_x: 0, view_y: 0, view_w: 1440, view_h: 900, zoom: 1, tool: "pen" }));
+const serverNow = (await pres.json()).now;
+check("Presence answers with the server clock", Math.abs(serverNow - Date.now()) < 60_000, `${serverNow - Date.now()} ms off`);
 check("Presence (cursor) streams", await waitFor(() => (prSub.getSnapshot().data ?? []).some((p) => p.user_id === "smoke-user" && p.cursor_x === 12.5 && p.tool === "pen")));
 const sig = await call(`/api/boards/${BOARD}/signals`, json({ kind: "heart", from: "smoke-user" }));
 check("Heart signal accepted", sig.status === 204);
 check("Heart signal streams", await waitFor(() => (sgSub.getSnapshot().data ?? []).some((s) => s.kind === "heart" && s.from_user === "smoke-user")));
+
+// 5b. Polling fallback (used when the live connection can't be reached)
+const snap = await (await call(`/api/boards/${BOARD}/snapshot?q=elements`)).json();
+check("Snapshot returns the board", Array.isArray(snap.rows) && snap.rows.some((r) => r.id === id) && typeof snap.v === "string");
+const same = await (await call(`/api/boards/${BOARD}/snapshot?q=elements&v=${encodeURIComponent(snap.v)}`)).json();
+check("Snapshot skips an unchanged board", same.unchanged === true);
+const prSnap = await (await call(`/api/boards/${BOARD}/snapshot?q=presence`)).json();
+check("Snapshot returns cursors", prSnap.rows?.some((p) => p.user_id === "smoke-user" && p.cursor_x === 12.5));
+const strange = await call("/api/stickers/123.png");
+check("Sticker route only serves built-in stickers", strange.status === 404);
 
 // 6. Media upload and Range reads
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
