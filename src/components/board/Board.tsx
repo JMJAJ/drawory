@@ -1710,32 +1710,17 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
           // Dragging any selected item moves the whole selection (and the rest of its group).
           const group = selectedSet.has(elId) ? selectedIds : withGroups([elId]);
           if (!selectedSet.has(elId)) setSelectedIds(group);
-          const ids = new Set(group);
-          for (const id of group) {
-            const r = rowsRef.current.get(id);
-            if (!r || !isArea(r.type)) continue;
-            const area = bounds(r);
-            for (const other of rowsRef.current.values()) if (!isArea(other.type) && contains(area, bounds(other))) ids.add(other.id);
-          }
-          // Locked items stay where they are. An arrow dragged away from what it's attached to lets go.
-          const originals = [...ids]
-            .map((id) => rowsRef.current.get(id))
-            .filter((r): r is ElementRow => !!r && !r.data.locked)
-            .map((r) =>
-              r.type === "arrow" && ((r.data.from && !ids.has(r.data.from)) || (r.data.to && !ids.has(r.data.to)))
-                ? { ...r, data: { ...r.data, from: undefined, to: undefined } }
-                : r,
-            );
-          if (!originals.length) return;
-          gesture.current = {
-            kind: "move",
-            wx: w.x,
-            wy: w.y,
-            originals,
-            moved: false,
-            canDrop: originals.length <= 12 && originals.every((r) => r.type !== "window" && blockFromElement(r)),
-          };
+          startMove(group, w);
           return;
+        }
+        // Pressing anywhere inside what's selected (between the lines of a drawing, say) moves it too.
+        if (!e.shiftKey && !e.ctrlKey && !e.metaKey && selectedIds.length) {
+          const box = unionBounds(selectedIds.map((id) => rowsRef.current.get(id)).filter((r): r is ElementRow => !!r && !isArea(r.type)));
+          const pad = 8 / cam.current.zoom;
+          if (box && w.x >= box.x - pad && w.x <= box.x + box.w + pad && w.y >= box.y - pad && w.y <= box.y + box.h + pad) {
+            startMove(selectedIds, w);
+            return;
+          }
         }
         // Empty canvas: draw a selection box. Shift/Ctrl adds to what's already selected.
         const base = e.shiftKey || e.ctrlKey || e.metaKey ? selectedIds : [];
@@ -2855,6 +2840,35 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
       }
     };
     nextFrame(step);
+  }
+
+  /** Starts dragging these items (and whatever sits inside any area among them). */
+  function startMove(group: string[], w: { x: number; y: number }) {
+    const ids = new Set(group);
+    for (const id of group) {
+      const r = rowsRef.current.get(id);
+      if (!r || !isArea(r.type)) continue;
+      const area = bounds(r);
+      for (const other of rowsRef.current.values()) if (!isArea(other.type) && contains(area, bounds(other))) ids.add(other.id);
+    }
+    // Locked items stay where they are. An arrow dragged away from what it's attached to lets go.
+    const originals = [...ids]
+      .map((id) => rowsRef.current.get(id))
+      .filter((r): r is ElementRow => !!r && !r.data.locked)
+      .map((r) =>
+        r.type === "arrow" && ((r.data.from && !ids.has(r.data.from)) || (r.data.to && !ids.has(r.data.to)))
+          ? { ...r, data: { ...r.data, from: undefined, to: undefined } }
+          : r,
+      );
+    if (!originals.length) return;
+    gesture.current = {
+      kind: "move",
+      wx: w.x,
+      wy: w.y,
+      originals,
+      moved: false,
+      canDrop: originals.length <= 12 && originals.every((r) => r.type !== "window" && blockFromElement(r)),
+    };
   }
 
   /** The partial eraser's reach on the board (a fixed size on screen). */

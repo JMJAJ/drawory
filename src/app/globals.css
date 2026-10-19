@@ -268,7 +268,18 @@ button:disabled { cursor: default; opacity: 0.55; }
 .bottombar {
   left: max(16px, env(safe-area-inset-left)); right: max(16px, env(safe-area-inset-right));
   bottom: max(18px, env(safe-area-inset-bottom));
-  display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px;
+  /* The tools sit in the exact middle of the screen, whatever is on either side. */
+  display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: end; gap: 12px;
+}
+.bottombar > .bottom-left { grid-column: 1; grid-row: 1; justify-self: start; }
+.bottombar > .dock-wrap { grid-column: 2; grid-row: 1; justify-self: center; margin: 0; }
+.bottombar > .bottom-right { grid-column: 3; grid-row: 1; justify-self: end; }
+/* Not enough room for one row: the controls go above, the tools stay centred at the bottom. */
+@media (min-width: 721px) and (max-width: 1500px) {
+  .bottombar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); row-gap: 10px; }
+  .bottombar > .bottom-left { grid-column: 1; grid-row: 1; }
+  .bottombar > .bottom-right { grid-column: 2; grid-row: 1; }
+  .bottombar > .dock-wrap { grid-column: 1 / -1; grid-row: 2; }
 }
 .bottom-left, .bottom-right { display: flex; align-items: center; gap: 8px; }
 .ctrl-group { display: flex; align-items: center; padding: 3px; border-radius: 14px; background: var(--surface); border: 1px solid var(--border); }
@@ -595,7 +606,7 @@ button:disabled { cursor: default; opacity: 0.55; }
   .partner-text { display: none; }
   .theme-btn { width: 46px; height: 46px; border-radius: 14px; }
 
-  .bottombar { left: max(8px, env(safe-area-inset-left)); right: max(8px, env(safe-area-inset-right)); bottom: max(8px, env(safe-area-inset-bottom)); gap: 8px; }
+  .bottombar { left: max(8px, env(safe-area-inset-left)); right: max(8px, env(safe-area-inset-right)); bottom: max(8px, env(safe-area-inset-bottom)); gap: 8px; display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; }
   /* Undo and Memory Lane on one row, the tools on their own full-width row below. */
   .bottom-left { order: 1; }
   .bottom-right { order: 2; margin-left: auto; }
