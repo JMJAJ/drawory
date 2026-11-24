@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Caveat, Geist, Geist_Mono, Permanent_Marker, Playfair_Display } from "next/font/google";
+import { Caveat, Fredoka, Geist, Geist_Mono, Permanent_Marker, Playfair_Display } from "next/font/google";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -11,6 +11,9 @@ const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
 });
+
+// Rounded display face for headings and the brand: friendlier than Geist at large sizes.
+const display = Fredoka({ variable: "--font-display", subsets: ["latin"] });
 
 // Text fonts on the board (see FONTS in lib/client/elements.ts). Only downloaded when used.
 const elegant = Playfair_Display({ variable: "--font-elegant", subsets: ["latin"], preload: false });
@@ -30,8 +33,8 @@ export const viewport: Viewport = {
   // Draw edge to edge on phones with a notch; the bars keep clear using safe-area insets.
   viewportFit: "cover",
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#F5F5F7" },
-    { media: "(prefers-color-scheme: dark)", color: "#0B0B0E" },
+    { media: "(prefers-color-scheme: light)", color: "#FAF7F8" },
+    { media: "(prefers-color-scheme: dark)", color: "#0E0C11" },
   ],
 };
 
@@ -40,7 +43,7 @@ const themeScript = `try{var t=localStorage.getItem("drawory:theme");if(t==="lig
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} ${elegant.variable} ${hand.variable} ${marker.variable}`} suppressHydrationWarning>
+    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} ${display.variable} ${elegant.variable} ${hand.variable} ${marker.variable}`} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>

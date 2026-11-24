@@ -14,6 +14,14 @@ function ago(t: number) {
   return `${Math.round(s / 86400)} d ago`;
 }
 
+// A stable, friendly colour per room so the list is easy to scan.
+const ROOM_COLORS = ["#e5577a", "#4b7fe0", "#22a56b", "#8b6cf0", "#e39a1c", "#d9548f"];
+function roomColor(id: string) {
+  let h = 0;
+  for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return ROOM_COLORS[h % ROOM_COLORS.length];
+}
+
 export function Home() {
   const router = useRouter();
   const [name, setName] = useState("");
@@ -63,7 +71,27 @@ export function Home() {
             <span className="brand-mark" aria-hidden="true" />
             <span>drawory</span>
           </div>
-          <h1>Draw together, live.</h1>
+          <div className="doodles" aria-hidden="true">
+            <svg width="46" height="46" viewBox="0 0 24 24" style={{ right: 24, top: 8, ["--r" as string]: "-12deg" }}>
+              <path d="M12 20.5l-7-6.8C3.2 12 2.6 10.7 2.6 9 2.6 6.2 4.8 4 7.5 4c1.7 0 3.2.8 4.5 2.3C13.3 4.8 14.8 4 16.5 4c2.7 0 4.9 2.2 4.9 5 0 1.7-.6 3-2.4 4.7z" fill="currentColor" />
+            </svg>
+            <svg width="34" height="34" viewBox="0 0 24 24" style={{ right: 120, top: 40, ["--r" as string]: "10deg" }}>
+              <path d="M12 2l2.6 6.9L22 9.3l-5.8 4.6 2 7.1L12 17l-6.2 4 2-7.1L2 9.3l7.4-.4z" fill="currentColor" />
+            </svg>
+            <svg width="40" height="40" viewBox="0 0 24 24" style={{ right: 50, top: 92 }}>
+              <path d="M3 14c2-4 4-4 6 0s4 4 6 0 4-4 6 0" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" />
+            </svg>
+          </div>
+          <h1>
+            Draw together,{" "}
+            <span className="squiggle">
+              live
+              <svg viewBox="0 0 100 12" preserveAspectRatio="none" aria-hidden="true">
+                <path d="M2 8c10-6 18 4 28-1s18-5 28 0 18 4 28-1 10-3 12-1" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" />
+              </svg>
+            </span>
+            .
+          </h1>
           <p className="muted">An endless canvas for sketches, notes, photos and videos. Make a room and share its code, or join someone else&apos;s.</p>
         </header>
 
@@ -96,7 +124,7 @@ export function Home() {
           </form>
 
           <form className="home-card" onSubmit={join}>
-            <div className="home-card-icon" aria-hidden="true">
+            <div className="home-card-icon blue" aria-hidden="true">
               <Icon name="link" />
             </div>
             <h2>Join a room</h2>
@@ -132,9 +160,14 @@ export function Home() {
               {rooms.map((r) => (
                 <li key={r.id}>
                   <a href={`/b/${r.id}`} className="recent-room">
-                    <span className="recent-name">{r.name || "Untitled room"}</span>
-                    <span className="recent-meta">
-                      <span className="mono">{displayCode(r.id)}</span> · {ago(r.visitedAt)}
+                    <span className="recent-bubble" aria-hidden="true" style={{ ["--c" as string]: roomColor(r.id) }}>
+                      {(r.name || "U").trim().charAt(0).toUpperCase()}
+                    </span>
+                    <span className="recent-text">
+                      <span className="recent-name">{r.name || "Untitled room"}</span>
+                      <span className="recent-meta">
+                        <span className="mono">{displayCode(r.id)}</span> · {ago(r.visitedAt)}
+                      </span>
                     </span>
                   </a>
                   <button

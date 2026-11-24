@@ -27,7 +27,10 @@ const handle = app.getRequestHandler();
 app.didWebSocketSetup = true;
 
 await app.prepare(); // also loads .env / .env.local into process.env
-const nextUpgrade = app.getUpgradeHandler();
+// `app.upgradeHandler` is Next's router-level handler, which is what serves hot reload
+// (/_next/hmr) in dev. `app.getUpgradeHandler()` is the inner page server's, which ignores it,
+// so the browser's hot reload socket would hang and never connect.
+const nextUpgrade = app.upgradeHandler ?? app.getUpgradeHandler();
 
 /* ---------- Access checks ---------- */
 

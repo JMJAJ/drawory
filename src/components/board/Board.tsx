@@ -3607,16 +3607,15 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
 
           {menuOpen && (
             <div className="menu-panel surface">
-              <h3>Room</h3>
-              <div>
-                <label className="field-label" htmlFor="board-name">
-                  Name
-                </label>
+              <div className="menu-head">
+                <span className="brand-mark" aria-hidden="true" />
                 <input
                   id="board-name"
-                  className="input"
+                  className="menu-title"
+                  aria-label="Room name"
                   defaultValue={board?.name}
                   key={board?.name}
+                  placeholder="Untitled room"
                   maxLength={80}
                   disabled={viewOnly}
                   onBlur={(e) => {
@@ -3624,191 +3623,291 @@ export function Board({ boardId, me, onChangeMe, viewOnly = false }: { boardId: 
                     if (name && name !== board?.name) api.updateBoard(boardId, { name, from: me.id }).then(setBoard, () => showToast("Couldn't rename"));
                   }}
                 />
+                <button type="button" className="icon-btn sm" aria-label="Close the menu" onClick={() => setMenuOpen(false)}>
+                  <Icon name="close" size={16} />
+                </button>
               </div>
+
               {!viewOnly && (
-                <div>
-                  <span className="field-label">Invite code</span>
-                  <button type="button" className="btn code-big" onClick={copyInvite}>
-                    <span className="mono">{displayCode(boardId)}</span>
-                    <span className="muted">Copy link</span>
-                  </button>
-                </div>
-              )}
-              {!viewOnly && (
-                <div className="menu-actions">
-                  <button type="button" className="btn" onClick={copyViewLink}>
-                    <Icon name="eye" size={18} /> {board?.view_code ? "Copy view-only link" : "Make a view-only link"}
-                  </button>
-                  {board?.view_code && (
-                    <button type="button" className="btn btn-ghost" onClick={turnOffViewLink}>
-                      Turn off view-only link
+                <section className="set-section">
+                  <h3>Invite</h3>
+                  <div className="set-group">
+                    <button type="button" className="set-row" onClick={copyInvite}>
+                      <span className="set-icon pink">
+                        <Icon name="link" size={15} />
+                      </span>
+                      <span className="set-label">
+                        <span className="mono set-code">{displayCode(boardId)}</span>
+                      </span>
+                      <span className="set-trail">Copy link</span>
                     </button>
-                  )}
-                </div>
-              )}
-              <button type="button" className="btn" onClick={() => void exportPng(false)}>
-                <Icon name="download" size={18} /> Save this page as a picture
-              </button>
-              <button type="button" className="btn" onClick={() => void saveTimelapse()}>
-                <Icon name="play" size={18} /> Save a time-lapse video
-              </button>
-              {!viewOnly && (
-                <div className="menu-templates">
-                  <span className="field-label">Page templates</span>
-                  {pageTplName === null ? (
-                    <button type="button" className="btn" onClick={() => setPageTplName(pages.find((p) => p.id === page)?.name ?? "")} disabled={!rows.length}>
-                      <Icon name="plus" size={18} /> Save this page as a template
+                    <button type="button" className="set-row" onClick={copyViewLink}>
+                      <span className="set-icon blue">
+                        <Icon name="eye" size={15} />
+                      </span>
+                      <span className="set-label">{board?.view_code ? "Copy view-only link" : "Make a view-only link"}</span>
                     </button>
-                  ) : (
-                    <form
-                      className="win-name-tpl"
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        savePageTemplate();
+                    {board?.view_code && (
+                      <button type="button" className="set-row" onClick={turnOffViewLink}>
+                        <span className="set-icon">
+                          <Icon name="close" size={15} />
+                        </span>
+                        <span className="set-label muted">Turn off view-only link</span>
+                      </button>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              <section className="set-section">
+                <h3>Save</h3>
+                <div className="set-group">
+                  <button type="button" className="set-row" onClick={() => void exportPng(false)}>
+                    <span className="set-icon green">
+                      <Icon name="download" size={15} />
+                    </span>
+                    <span className="set-label">Page as a picture</span>
+                  </button>
+                  <button type="button" className="set-row" onClick={() => void saveTimelapse()}>
+                    <span className="set-icon violet">
+                      <Icon name="play" size={15} />
+                    </span>
+                    <span className="set-label">Time-lapse video</span>
+                  </button>
+                  {!viewOnly &&
+                    (pageTplName === null ? (
+                      <button type="button" className="set-row" onClick={() => setPageTplName(pages.find((p) => p.id === page)?.name ?? "")} disabled={!rows.length}>
+                        <span className="set-icon amber">
+                          <Icon name="window" size={15} />
+                        </span>
+                        <span className="set-label">Page as a template</span>
+                      </button>
+                    ) : (
+                      <form
+                        className="set-row set-form"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          savePageTemplate();
+                        }}
+                      >
+                        <input autoFocus className="input" aria-label="Template name" placeholder="Template name" value={pageTplName} maxLength={40} onChange={(e) => setPageTplName(e.target.value)} />
+                        <button type="submit" className="btn btn-primary">
+                          Save
+                        </button>
+                      </form>
+                    ))}
+                </div>
+                {!viewOnly && pageTemplates.length > 0 && (
+                  <div className="set-group">
+                    {pageTemplates.map((t) => (
+                      <div key={t.id} className="set-row set-split">
+                        <button type="button" className="set-row-main" title="Add it to this page" onClick={() => applyPageTemplate(t.items ?? [])}>
+                          <span className="set-icon">
+                            <Icon name="window" size={15} />
+                          </span>
+                          <span className="set-label">{t.name}</span>
+                          <span className="set-trail">{t.items?.length ?? 0} things</span>
+                        </button>
+                        <button type="button" className="icon-btn sm" aria-label={`Delete the template ${t.name}`} onClick={() => deleteTemplate(t.id)}>
+                          <Icon name="trash" size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              <section className="set-section">
+                <h3>Room</h3>
+                <div className="set-group">
+                  <label className="set-row">
+                    <span className="set-icon blue">
+                      <Icon name="volume" size={15} />
+                    </span>
+                    <span className="set-label">
+                      Proximity audio
+                      <small>Things get quieter further away</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      className="switch"
+                      checked={proximityOn}
+                      onChange={(e) => {
+                        setProximityOn(e.target.checked);
+                        try {
+                          localStorage.setItem("drawory:proximity", e.target.checked ? "on" : "off");
+                        } catch {}
                       }}
-                    >
-                      <input autoFocus className="input" aria-label="Template name" value={pageTplName} maxLength={40} onChange={(e) => setPageTplName(e.target.value)} />
-                      <button type="submit" className="btn btn-primary">
-                        Save
-                      </button>
-                    </form>
+                    />
+                  </label>
+                  {isCreator && (
+                    <label className="set-row">
+                      <span className="set-icon pink">
+                        <Icon name="lock" size={15} />
+                      </span>
+                      <span className="set-label">
+                        Only I can clear pages
+                        <small>Others can still draw and add pages</small>
+                      </span>
+                      <input
+                        type="checkbox"
+                        className="switch"
+                        checked={!!board?.settings?.creatorOnlyClear}
+                        onChange={(e) =>
+                          api
+                            .updateBoard(boardId, { settings: { creatorOnlyClear: e.target.checked }, from: me.id })
+                            .then(setBoard, (err) => showToast(err instanceof Error ? err.message : "Couldn't save that"))
+                        }
+                      />
+                    </label>
                   )}
-                  {pageTemplates.map((t) => (
-                    <div key={t.id} className="menu-template">
-                      <button type="button" className="btn btn-ghost" title="Add it to this page" onClick={() => applyPageTemplate(t.items ?? [])}>
-                        <Icon name="window" size={16} /> {t.name}
-                        <span className="muted">{t.items?.length ?? 0} things</span>
-                      </button>
-                      <button type="button" className="icon-btn sm" aria-label={`Delete the template ${t.name}`} onClick={() => deleteTemplate(t.id)}>
-                        <Icon name="trash" size={15} />
-                      </button>
-                    </div>
-                  ))}
                 </div>
-              )}
-              {isCreator && (
-                <label className="toggle-row">
-                  <input
-                    type="checkbox"
-                    checked={!!board?.settings?.creatorOnlyClear}
-                    onChange={(e) =>
-                      api
-                        .updateBoard(boardId, { settings: { creatorOnlyClear: e.target.checked }, from: me.id })
-                        .then(setBoard, (err) => showToast(err instanceof Error ? err.message : "Couldn't save that"))
-                    }
-                  />
-                  <span>
-                    <strong>Only I can clear or delete pages</strong>
-                    <span className="muted">You made this room. Others can still draw and add pages.</span>
-                  </span>
-                </label>
-              )}
-              <Link className="btn" href="/" style={{ justifyContent: "flex-start" }}>
-                <Icon name="back" size={18} /> All rooms
-              </Link>
-              <label className="toggle-row">
-                <input
-                  type="checkbox"
-                  checked={proximityOn}
-                  onChange={(e) => {
-                    setProximityOn(e.target.checked);
-                    try {
-                      localStorage.setItem("drawory:proximity", e.target.checked ? "on" : "off");
-                    } catch {}
-                  }}
-                />
-                <span>
-                  <strong>Proximity audio</strong>
-                  <span className="muted">Videos and voice notes get quieter the further you are from them.</span>
-                </span>
-              </label>
+              </section>
+
               {!viewOnly && (
-                <div className="spotify-row">
-                  <span className="field-label">
-                    <Icon name="music" size={14} /> Spotify
-                  </span>
+                <section className="set-section">
+                  <h3>Music</h3>
                   {spotifyLinked ? (
-                    <>
-                      <label className="toggle-row">
+                    <div className="set-group">
+                      <label className="set-row">
+                        <span className="set-icon spotify">
+                          <Icon name="music" size={15} />
+                        </span>
+                        <span className="set-label">
+                          Share what I&apos;m playing
+                          <small>{myTrack ? `${myTrack.title} · ${myTrack.artists}` : shareSpotify ? "Nothing playing right now" : "Hidden from the room"}</small>
+                        </span>
                         <input
                           type="checkbox"
+                          className="switch"
                           checked={shareSpotify}
                           onChange={(e) => {
                             setShareSpotify(e.target.checked);
                             setSharingSpotify(e.target.checked);
                           }}
                         />
-                        <span>
-                          <strong>Share what I&apos;m listening to</strong>
-                          <span className="muted">{myTrack ? `${myTrack.title} · ${myTrack.artists}` : shareSpotify ? "Nothing playing right now" : "Hidden from the room"}</span>
-                        </span>
                       </label>
                       <button
                         type="button"
-                        className="btn btn-ghost"
+                        className="set-row"
                         onClick={() => {
                           forgetSpotify();
                           setSpotifyLinked(false);
                         }}
                       >
-                        Disconnect Spotify
+                        <span className="set-icon">
+                          <Icon name="close" size={15} />
+                        </span>
+                        <span className="set-label muted">Disconnect Spotify</span>
                       </button>
-                    </>
+                    </div>
                   ) : (
-                    <>
-                      <form
-                        className="spotify-card-form"
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          const id = cardIdFrom(cardDraft);
-                          if (!id) return setCardError("Paste the whole link from Data Card for Spotify");
-                          setSpotifyCard(id);
-                          setCardDraft("");
-                          setCardError(null);
-                          setShareSpotify(true);
-                          setSpotifyLinked(true);
-                          showToast("Connected. The room sees what you're playing within a few seconds.");
-                        }}
-                      >
-                        <input
-                          className="input"
-                          aria-label="Your Data Card for Spotify link"
-                          placeholder="Paste your Data Card for Spotify link"
-                          value={cardDraft}
-                          onChange={(e) => {
-                            setCardDraft(e.target.value);
+                    <details className="set-group set-details">
+                      <summary className="set-row">
+                        <span className="set-icon spotify">
+                          <Icon name="music" size={15} />
+                        </span>
+                        <span className="set-label">
+                          Connect Spotify
+                          <small>Show the room what you&apos;re listening to</small>
+                        </span>
+                        <span className="set-chev" aria-hidden="true" />
+                      </summary>
+                      <div className="set-body">
+                        <form
+                          className="spotify-card-form"
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            const id = cardIdFrom(cardDraft);
+                            if (!id) return setCardError("Paste the whole link from Data Card for Spotify");
+                            setSpotifyCard(id);
+                            setCardDraft("");
                             setCardError(null);
+                            setShareSpotify(true);
+                            setSpotifyLinked(true);
+                            showToast("Connected. The room sees what you're playing within a few seconds.");
                           }}
-                        />
-                        <button type="submit" className="btn btn-primary" disabled={!cardDraft.trim()}>
-                          Share
+                        >
+                          <input
+                            className="input"
+                            aria-label="Your Data Card for Spotify link"
+                            placeholder="Data Card for Spotify link"
+                            value={cardDraft}
+                            onChange={(e) => {
+                              setCardDraft(e.target.value);
+                              setCardError(null);
+                            }}
+                          />
+                          <button type="submit" className="btn btn-primary" disabled={!cardDraft.trim()}>
+                            Share
+                          </button>
+                        </form>
+                        {cardError && <span className="field-error">{cardError}</span>}
+                        <span className="muted spotify-help">
+                          Works with free Spotify. No link yet? Make one at{" "}
+                          <a href="https://data-card-for-spotify.herokuapp.com" target="_blank" rel="noopener noreferrer">
+                            Data Card for Spotify
+                          </a>
+                          .
+                        </span>
+                        <button type="button" className="btn btn-ghost spotify-premium" onClick={connectSpotify}>
+                          Or sign in with Spotify (Premium)
                         </button>
-                      </form>
-                      {cardError && <span className="field-error">{cardError}</span>}
-                      <span className="muted spotify-help">
-                        Works with free Spotify. No link yet? Make one at{" "}
-                        <a href="https://data-card-for-spotify.herokuapp.com" target="_blank" rel="noopener noreferrer">
-                          Data Card for Spotify
-                        </a>
-                        .
-                      </span>
-                      <button type="button" className="btn btn-ghost" onClick={connectSpotify}>
-                        Or sign in with Spotify (Premium)
-                      </button>
-                    </>
+                      </div>
+                    </details>
                   )}
-                </div>
+                </section>
               )}
-              <h3>You</h3>
-              <button type="button" className="btn" style={{ justifyContent: "flex-start" }} onClick={() => setDialog({ kind: "me" })}>
-                <span className="avatar" style={{ background: me.color, width: 26, height: 26 }}>
-                  {initials(me.name)}
-                </span>
-                {me.name} · change
-              </button>
-              <p className="muted" style={{ margin: 0, fontSize: 12 }}>
-                Shortcuts: V select · H pan · P draw · E erase · T text · N list · W window · Space+drag pan · Ctrl+Z undo · / say something · Ctrl+F search · Ctrl+D duplicate · Ctrl+G group · Ctrl+Shift+L lock · Ctrl+C/V copy and paste · arrows nudge
-              </p>
+
+              <section className="set-section">
+                <h3>You</h3>
+                <div className="set-group">
+                  <button type="button" className="set-row" onClick={() => setDialog({ kind: "me" })}>
+                    <span className="avatar" style={{ background: me.color, width: 28, height: 28, fontSize: 12 }}>
+                      {initials(me.name)}
+                    </span>
+                    <span className="set-label">{me.name}</span>
+                    <span className="set-trail">Edit</span>
+                  </button>
+                </div>
+              </section>
+
+              <details className="set-shortcuts">
+                <summary>Keyboard shortcuts</summary>
+                <dl>
+                  {(
+                    [
+                      ["V", "Select"],
+                      ["H", "Pan"],
+                      ["P", "Draw"],
+                      ["E", "Erase"],
+                      ["T", "Text"],
+                      ["N", "List"],
+                      ["W", "Window"],
+                      ["Space", "Hold to pan"],
+                      ["/", "Say something"],
+                      ["Ctrl Z", "Undo"],
+                      ["Ctrl F", "Search"],
+                      ["Ctrl D", "Duplicate"],
+                      ["Ctrl G", "Group"],
+                      ["Ctrl ⇧ L", "Lock"],
+                      ["Ctrl C / V", "Copy, paste"],
+                      ["Arrows", "Nudge"],
+                    ] as const
+                  ).map(([k, label]) => (
+                    <div key={k}>
+                      <dt>{label}</dt>
+                      <dd>
+                        <kbd>{k}</kbd>
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              </details>
+
+              <Link className="set-back" href="/">
+                <Icon name="back" size={15} /> All rooms
+              </Link>
             </div>
           )}
 
